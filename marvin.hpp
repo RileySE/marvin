@@ -6330,6 +6330,7 @@ public:
     bool do_classification; //If true, take the presence of each ligand type as a label.
     std::vector<std::string> seen_labels; //The ligand label names we've seen, which have class # equal to their index.
     std::string class_labels_file; //a file containing a numeric label for each pdb in pdb_name_file, used for classification.
+    bool use_pocket_as_data; //Flag to use the binding pocket(specified in the atom_names file) as the input data instead of the entire protein.
     bool random; //to shuffle or not to shuffle, that is the question.
 
     int numofitems() {
@@ -6520,6 +6521,7 @@ public:
 	SetValue(json, atom_file, "")
 	SetValue(json, do_classification, false)
 	SetValue(json, class_labels_file, "")
+	SetValue(json, use_pocket_as_data, false)
 	SetValue(json, random, true)
 	init();
     };
@@ -6658,8 +6660,22 @@ public:
 	pdb2grd::site_type = 0; //protein atoms
 	
 	//Make the grid.
-	R3Grid* datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
-	
+	R3Grid* datagrid;
+	if(use_pocket_as_data && atom_file != "") { //Rasterize only those atoms listed in the atoms file(expected to be the atoms around the binding pocket)
+	    pdb2grd::site_type = 0;
+	    pdb2grd::use_atom_values = TRUE;
+	    char temp[100];
+	    strcpy(temp, atom_names[counter].c_str());
+	    pdb2grd::atom_values_name = temp;
+	    
+	    pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
+	    datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	    pdb2grd::use_atom_values = FALSE;
+	}
+	else { //Rasterize all protein atoms
+	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	}
+
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
 	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
@@ -6679,26 +6695,6 @@ public:
             labelCPU->CPUmem[count] = (StorageT)class_names[counter];
 	    //	    std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
           }
-	  else {
-            //New old method
-	
-            for(int modelnum = 0; modelnum < rot_pdb->NModels(); modelnum++) {
-              const PDBModel* curr_model = rot_pdb->Model(modelnum);
-	      for(int resnum = curr_model->NResidues() - 1; resnum >= 0; resnum--) {
-                //std::cout<<"residue "<<resnum<<" is "<<curr_model->Residue(resnum)->Name()<<std::endl;
-                if(curr_model->Residue(resnum)->HasHetAtoms()) {
-      
-		//Get an iterator to the element containing the ligand string we're on, then get the distance in the vector to that string(why is this so complicated?)
-                std::vector<std::string>::iterator lig_loc = std::find(seen_labels.begin(), seen_labels.end(), (std::string)(curr_model->Residue(resnum)->Name()));
-		labelCPU->CPUmem[count] = (StorageT)(std::distance(seen_labels.begin(), lig_loc)); 
-		
-		//std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
-		break;
-                }
-	      
-              }
-            }
-          }
       	}   
 	
 	else {
@@ -6714,7 +6710,7 @@ public:
 	    labelgrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	    pdb2grd::site_type = 0;
 	  }
-	  else if(atom_file != "") {
+	  else if(!use_pocket_as_data && atom_file != "") {
 	    //Generate label grid from PDB
 	    //Run grd converter with label_atom_file given
 	    pdb2grd::site_type = 0;
