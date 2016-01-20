@@ -82,6 +82,12 @@
 #include <curand.h>
 #include <cudnn.h>
 #include <sys/time.h>
+#include "R3Shapes/R3Shapes.h"
+#include "PDB/PDB.h"
+#include "pdb2grd/pdb2grd.cpp"
+#include "grdscale/grdscale.cpp"
+#include "pdbrotate/pdbrotate.cpp"
+#include "grd2gedt/grd2gedt.cpp"
 
 namespace marvin {
 
@@ -6304,6 +6310,484 @@ public:
 // Add your new layers here
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
+  class PDBDataLayer : public DataLayer {
+    Tensor<StorageT>* dataCPU;
+    Tensor<StorageT>* labelCPU;
+
+  public:
+
+    std::string pdb_name_file;
+    std::string atom_file;
+    std::vector<std::string> pdb_names;
+    std::vector<std::string> atom_names;
+    std::vector<int> class_names; //class ID's for classification, ordered the same as pdb_names.
+    int num_pdbs;
+    int batch_size;
+    float data_aug_max_rot; //the max number of radians for random pdb rotations.
+    bool lig_labels;
+    std::vector<int> data_dims;
+    std::vector<int> label_dims;
+    bool do_classification; //If true, take the presence of each ligand type as a label.
+    std::vector<std::string> seen_labels; //The ligand label names we've seen, which have class # equal to their index.
+    std::string class_labels_file; //a file containing a numeric label for each pdb in pdb_name_file, used for classification.
+    bool random; //to shuffle or not to shuffle, that is the question.
+
+    int numofitems() {
+      return pdb_names.size();
+    };
+
+    //Called once at network creation?
+    void init() {
+      train_me = false;
+      counter = 0;
+      std::cout<<"PDBDataLayer "<<name<<" loading PDB filenames: "<<std::endl;
+
+      //Load filenames from file
+      std::filebuf namebuffer;
+      if(namebuffer.open(pdb_name_file,std::ios::in)) {
+	std::istream namestream(&namebuffer);
+
+	char temp[256];
+	namestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	while (namestream) {
+
+
+	  pdb_names.push_back(std::string(temp));
+	  std::cout<<temp<<std::endl;
+	  namestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	}
+	namebuffer.close();
+
+      } 
+
+      else {
+	std::cout<<"ERROR! Could not read PDB name file "<<pdb_name_file<<std::endl;
+      }
+
+
+      num_pdbs = pdb_names.size();
+
+
+      //Load file listing atom label files.
+      //Should be in the same order as the pdbs.
+      if(atom_file != "") {
+	std::filebuf atomnamebuffer;
+	if(atomnamebuffer.open(atom_file,std::ios::in)) {
+	  std::istream atomnamestream(&atomnamebuffer);
+	  
+	  char temp[256];
+	  atomnamestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  while (atomnamestream) {
+	    
+	    
+	    atom_names.push_back(std::string(temp));
+	    std::cout<<temp<<std::endl;
+	    atomnamestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  }
+	  atomnamebuffer.close();
+	  
+	} 
+	
+	else {
+	  std::cout<<"ERROR! Could not read atom file "<<atom_file<<std::endl;
+	}
+	
+      }
+      
+      
+      //Load class label file, similar to the above.
+      if(class_labels_file != "") {
+	std::filebuf classlabelbuffer;
+	if(classlabelbuffer.open(class_labels_file,std::ios::in)) {
+	  std::istream classlabelstream(&classlabelbuffer);
+	  
+	  char temp[256];
+	  classlabelstream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  while (classlabelstream) {	    
+	    
+	    class_names.push_back(atoi(temp)); //convert value to int and store
+	    //	    std::cout<<temp<<std::endl;
+	    classlabelstream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  }
+	  classlabelbuffer.close();
+	  
+	} 
+	
+	else {
+	  std::cout<<"ERROR! Could not read class label file "<<class_labels_file<<std::endl;
+	}
+	
+      }
+
+
+
+      //Instantiate dataCPU and labelCPU tensors
+      //Want to give them a set of dimensions rather than a file handle.
+      //Need the dataCPU dims to be nelemsXnfiltersXxXyXz
+      //Only want batch_size elements in dataCPU at a time, so the first dimension is batch_size
+      //Second is always 1(I think?)
+      std::vector<int> dataCPU_dims;
+      dataCPU_dims.push_back(batch_size);
+      dataCPU_dims.push_back(1);
+      dataCPU_dims.push_back(data_dims[0]);
+      dataCPU_dims.push_back(data_dims[1]);
+      dataCPU_dims.push_back(data_dims[2]);
+      
+      dataCPU  = new Tensor<StorageT> (dataCPU_dims);
+      dataCPU->print(veci(0));
+      
+      //Do the same for labelCPU
+      std::vector<int> labelCPU_dims;
+      labelCPU_dims.push_back(batch_size);
+      labelCPU_dims.push_back(1);
+      labelCPU_dims.push_back(label_dims[0]);
+      labelCPU_dims.push_back(label_dims[1]);
+      labelCPU_dims.push_back(label_dims[2]);
+
+
+      labelCPU = new Tensor<StorageT>(labelCPU_dims);
+      labelCPU->print(veci(0));
+      std::cout<<"    "; labelCPU->printRange();
+      while (labelCPU->dim.size()<dataCPU->dim.size())
+	labelCPU->dim.push_back(1);
+      //      std::cout<<"labelCPU dim size is "<<labelCPU->dim.size()<<std::endl;
+      //      for(int i = 0; i<labelCPU->dim.size();i++) {
+      //std::cout<<"labelcpu dim "<<i<<" is "<<labelCPU->dim[i]<<" and datacpu is "<<dataCPU->dim[i]<<std::endl;
+      //}
+
+      //Set pdb rotation range from input
+      pdbrotate::magnitude = data_aug_max_rot;
+
+      //Set grid spacing for pdb2grd
+      pdb2grd::grid_spacing = 1;
+
+      //Set world radius(in angstroms) for pdb2grd
+      //NOTE: This needs to be large enough to hold all proteins we see, or their extremal elements will be left out!
+      pdb2grd::world_radius = 50;
+
+      /*
+      //Before we shuffle, we need to assign class labels if we are doing classification.
+      char* curr_pdb_name = new char[256];
+      
+      for(int c = 0; c < pdb_names.size(); c++) {
+
+	strcpy(curr_pdb_name, pdb_names[c].c_str());
+      
+	PDBFile* curr_pdb = pdb2grd::ReadPDB(curr_pdb_name);	
+	if(!curr_pdb) {
+	  RNFail("Unable to allocate PDB file for %s", curr_pdb_name);
+	}
+
+
+	for(int modelnum = 0; modelnum < curr_pdb->NModels(); modelnum++) {
+	  const PDBModel* curr_model = curr_pdb->Model(modelnum);
+	  for(int resnum = curr_model->NResidues() - 1; resnum >= 0; resnum--) {
+	    //std::cout<<"residue "<<resnum<<" is "<<curr_model->Residue(resnum)->Name()<<std::endl;
+	    if(curr_model->Residue(resnum)->HasHetAtoms()) {
+	    
+	      if(std::find(seen_labels.begin(), seen_labels.end(), (std::string)(curr_model->Residue(resnum)->Name())) == seen_labels.end()) { //if we have not seen this ligand before, push it back
+		seen_labels.push_back((std::string)(curr_model->Residue(resnum)->Name()));
+	      }	      
+	      break;
+	    }
+	  
+	  }
+	}
+	delete curr_pdb;
+      }
+      delete[] curr_pdb_name;
+      */
+
+      if (phase!=Testing) shuffle();
+      
+    }
+
+      PDBDataLayer(std::string name_, Phase phase_, std::string pdb_name_file_, int batch_size_, float data_aug_max_rot_, bool lig_labels_, std::vector<int> data_dims_, std::vector<int> label_dims_, std::string atom_file_, bool do_classification_): DataLayer(name_), batch_size(batch_size_), pdb_name_file(pdb_name_file_), data_aug_max_rot(data_aug_max_rot_), lig_labels(lig_labels_), data_dims(data_dims_), label_dims(label_dims_), atom_file(atom_file_), do_classification(do_classification_){
+      phase = phase_;
+      init();
+    };
+
+
+    PDBDataLayer(JSON* json) {
+      SetOrDie(json, name)
+	SetValue(json, phase,		Training)
+	SetOrDie(json, pdb_name_file)
+	SetValue(json, batch_size,	64)
+	SetValue(json, lig_labels, false)
+	SetValue(json, data_aug_max_rot, 0.0)
+	SetOrDie(json, data_dims)
+	SetOrDie(json, label_dims)
+	SetValue(json, atom_file, "")
+	SetValue(json, do_classification, false)
+	SetValue(json, class_labels_file, "")
+	SetValue(json, random, true)
+	init();
+    };
+
+
+    ~PDBDataLayer(){
+      delete dataCPU;
+      delete labelCPU;
+    };
+
+
+    size_t Malloc(Phase phase_){
+      std::cout<<"phase is "<<phase<<" and phase_ is "<<phase_<<std::endl;
+      if (phase == Training && phase_==Testing) return 0;
+      
+      size_t memoryBytes = 0;
+      
+      std::cout<< (train_me? "* " : "  ");
+      std::cout<<name<<std::endl;
+      
+      out[0]->need_diff = false;
+      std::vector<int> data_dim = dataCPU->dim;
+      data_dim[0] = batch_size;
+      out[0]->receptive_field.resize(data_dim.size()-2);	fill_n(out[0]->receptive_field.begin(), data_dim.size()-2,1);
+      out[0]->receptive_gap.resize(data_dim.size()-2);	fill_n(out[0]->receptive_gap.begin(),   data_dim.size()-2,1);
+      out[0]->receptive_offset.resize(data_dim.size()-2);	fill_n(out[0]->receptive_offset.begin(),data_dim.size()-2,0);
+      memoryBytes += out[0]->Malloc(data_dim);
+      
+      
+      out[1]->need_diff = false;
+      std::vector<int> label_dim= labelCPU->dim;
+      label_dim[0] = batch_size;
+      memoryBytes += out[1]->Malloc(label_dim);
+      
+      return memoryBytes;
+    };
+    
+    //based on tensor permute(), given a vector specifying an order of indices, 
+    std::vector<std::string> permute_names(std::vector<size_t> v, std::vector<std::string> target){
+      size_t nbItems = target.size();
+      std::vector<std::string> target_new;
+      for (size_t i=0;i<nbItems;++i){
+	target_new.push_back(target[v[i]]);
+      }
+      return target_new;
+    };
+
+    //based on tensor permute(), given a vector specifying an order of indices, 
+    std::vector<int> permute_ints(std::vector<size_t> v, std::vector<int> target){
+      size_t nbItems = target.size();
+      std::vector<int> target_new;
+      for (size_t i=0;i<nbItems;++i){
+	target_new.push_back(target[v[i]]);
+      }
+      return target_new;
+    };
+
+
+    //Shuffling after each epoch means changing the order of the pdb names in the name vector.
+    void shuffle(){
+      if(!random) return;
+      std::vector<size_t> v = randperm(pdb_names.size(), rng);
+      pdb_names = permute_names(v, pdb_names);
+      if(atom_file != "") {
+        atom_names = permute_names(v, atom_names);
+      }
+      if(class_labels_file != "") {
+        class_names = permute_ints(v, class_names);
+      }
+      //      std::random_shuffle(pdb_names.begin(), pdb_names.end());
+    };
+
+
+    void forward(Phase phase_){
+
+      prefetch();
+
+      checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      checkCUDA(__LINE__, cudaMemcpy(out[0]->dataGPU, dataCPU->CPUmem, batch_size * dataCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      
+    };
+
+    
+    //Called once per iteration.
+    //Want to instantiate GAPS, load pdb of choice from the name list, create a random rotation, then generate a data and label grids, and pass them into dataCPU and labelCPU.
+    void prefetch() {
+      
+      
+      
+      if(counter + batch_size >= num_pdbs) {
+	++epoch;
+	if(phase!=Testing) {
+	  // std::cout<<"shuffling!"<<std::endl;
+	  shuffle();
+	  counter = 0;
+	}
+	else { //Hack to make testing work, rewind the counter and rerun some points so that the remaining points can be tested.
+	  int diff = counter + batch_size - num_pdbs;
+	  counter -= diff;
+	}
+      }
+      
+      //	pdb2grd::print_verbose = 1;
+      char* curr_pdb_name = new char[256];
+      //Do batch_size times:
+      for(int count=0; count < batch_size; count++) {
+	
+	//      std::cout<<"starting prefetch iteration"<<std::endl;
+	//	std::cout<<"num_pdbs is "<<num_pdbs<<" counter is "<<counter<<std::endl;
+	
+	
+	
+	//Load PDB file with gaps
+	
+	strcpy(curr_pdb_name, pdb_names[counter].c_str());
+	
+	PDBFile* curr_pdb = pdb2grd::ReadPDB(curr_pdb_name);
+	
+	//Do a random rotation of the pdb for data augmentation.
+	
+	PDBFile* rot_pdb = pdbrotate::RotatePDB(curr_pdb);
+	
+	if(!rot_pdb) {
+	  RNFail("Unable to allocate PDB file for %s", curr_pdb_name);
+	}
+	
+	//	pdb2grd::pdb_name = curr_pdb_name; //set pdb2grd name just in case it matters
+	
+	//	std::cout<<"adding pdb name "<<pdb_name<<std::endl;
+	//Generate grid from PDB
+	
+	//Set parameters for pdb2grd
+	memcpy( pdb2grd::grid_resolution, &data_dims[0], sizeof( int ) * data_dims.size() );
+	//	grid_resolution = &data_dims[0];
+	pdb2grd::rasterization_type = 1; //solid shape density
+	pdb2grd::site_type = 0; //protein atoms
+	
+	//Make the grid.
+	R3Grid* datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	
+	//Apply gedt distance transform
+	grd2gedt::gedt_sigma = 4.0;
+	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
+	R3Grid* gedtgrid = datagrid;
+	
+	//Scale values to be between 0 and 1.
+	R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
+	//	R3Grid* scaleddatagrid = gedtgrid;
+	//delete datagrid;
+	datagrid = scaleddatagrid;
+	
+	//	std::cout<<"xyz spacing is "<<datagrid->WorldSpacing(0)<<std::endl;
+	
+	if(do_classification) {
+
+          if(class_labels_file != "") {
+            labelCPU->CPUmem[count] = (StorageT)class_names[counter];
+	    //	    std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
+          }
+	  else {
+            //New old method
+	
+            for(int modelnum = 0; modelnum < rot_pdb->NModels(); modelnum++) {
+              const PDBModel* curr_model = rot_pdb->Model(modelnum);
+	      for(int resnum = curr_model->NResidues() - 1; resnum >= 0; resnum--) {
+                //std::cout<<"residue "<<resnum<<" is "<<curr_model->Residue(resnum)->Name()<<std::endl;
+                if(curr_model->Residue(resnum)->HasHetAtoms()) {
+      
+		//Get an iterator to the element containing the ligand string we're on, then get the distance in the vector to that string(why is this so complicated?)
+                std::vector<std::string>::iterator lig_loc = std::find(seen_labels.begin(), seen_labels.end(), (std::string)(curr_model->Residue(resnum)->Name()));
+		labelCPU->CPUmem[count] = (StorageT)(std::distance(seen_labels.begin(), lig_loc)); 
+		
+		//std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
+		break;
+                }
+	      
+              }
+            }
+          }
+      	}   
+	
+	else {
+	  //Determine label atoms(pocket versus ligand)
+	  
+	  R3Grid* labelgrid;
+	  
+	  memcpy( pdb2grd::grid_resolution, &label_dims[0], sizeof( int ) * label_dims.size() );
+	  
+	  if(lig_labels) {
+	    //Run grd converter with hetatm conversion enabled
+	    pdb2grd::site_type = 1; //ligand atoms rather than protein.
+	    labelgrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	    pdb2grd::site_type = 0;
+	  }
+	  else if(atom_file != "") {
+	    //Generate label grid from PDB
+	    //Run grd converter with label_atom_file given
+	    pdb2grd::site_type = 0;
+	    pdb2grd::use_atom_values = TRUE;
+	    char temp[100];
+	    strcpy(temp, atom_names[counter].c_str());
+	    pdb2grd::atom_values_name = temp;
+	    
+	    pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
+	    labelgrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	    pdb2grd::use_atom_values = FALSE;
+	  }
+	  else { //No label format was specified, so die.
+	    std::cout<<"ERROR! No label specification(either lig_labels = true or label_atoms_file = <filename>) was passed!"<<std::endl;
+	  }
+	  
+	  //Scale label grid
+	  //	grdscale::print_verbose = 1;
+	  R3Grid* scaledlabelgrid = grdscale::CreateScaledGrid(labelgrid);
+	  delete labelgrid;
+	  labelgrid = scaledlabelgrid;
+	  
+	  
+	  const RNScalar* labelgrid_values = labelgrid->GridValues();
+	  int label_num_ele = labelgrid->NEntries();
+	  
+	  for( int i = 0; i < label_num_ele; i++) {
+	    //Threshold nonzero values to 1.
+	    if(labelgrid_values[i]!=0) {
+	      labelCPU->CPUmem[count * label_num_ele + i] = (float)(1.0); //Add values to the <counter>'th volume's indices
+	    }
+	    else {
+	      labelCPU->CPUmem[count * label_num_ele + i] = (float)(0.0); //Add values to the <counter>'th volume's indices
+	    }
+	  }
+
+	    delete scaledlabelgrid;
+	  
+	}
+	
+	
+	//Put PDB grid into dataCPU, label into labelCPU
+	//Dump binary from array into CPUmem
+	const RNScalar* datagrid_values = datagrid->GridValues();
+	int data_num_ele = datagrid->NEntries();
+	for( int i = 0; i < data_num_ele; i++) {
+	  dataCPU->CPUmem[count * data_num_ele + i] = (float)(datagrid_values[i]); //Add values to the <counter>'th volume's indices
+	}
+	
+	
+	
+	
+	counter++;
+
+	//delete things
+	delete curr_pdb, rot_pdb;
+	delete gedtgrid, scaleddatagrid;
+	delete datagrid;
+	
+      }
+      delete[] curr_pdb_name;
+      
+      //check for having exactly finished the data set, which should only come into play for testing.
+      //Need to reset counter so future testing iterations can run properly.
+      if(counter == num_pdbs) {
+	counter = 0;
+      }
+      
+    } //end prefetch
+    
+  };//End PDBDataLayer
+
+
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // Net
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -6341,6 +6825,9 @@ public:
             Response* pResponse;
 
                  if (0==type.compare("MemoryData"))     pLayer = new MemoryDataLayer(p);
+		 else if (0==type.compare("PDBData")) {
+		   pLayer = new PDBDataLayer(p);
+		 }
             else if (0==type.compare("DiskData")){
                 uint8_t fpTypeid = readTypeID(p->member["file_data"]->returnString());
                      if (fpTypeid==typeID(typeid(half)))        pLayer = new DiskDataLayer<half>(p);
