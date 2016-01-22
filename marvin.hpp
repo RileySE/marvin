@@ -83,6 +83,7 @@
 #include <cudnn.h>
 #include <sys/time.h>
 #include "R3Shapes/R3Shapes.h"
+#include "RNBasics/RNBasics.h"
 #include "PDB/PDB.h"
 #include "pdb2grd/pdb2grd.cpp"
 #include "grdscale/grdscale.cpp"
@@ -6464,8 +6465,12 @@ public:
 
       //Set world radius(in angstroms) for pdb2grd
       //NOTE: This needs to be large enough to hold all proteins we see, or their extremal elements will be left out!
-      pdb2grd::world_radius = 50;
-
+      if(!use_pocket_as_data) {
+	pdb2grd::world_radius = 50;
+      }
+      else { //if we're using pockets, we don't need as large of a radius.
+	pdb2grd::world_radius = 10;
+      }
       /*
       //Before we shuffle, we need to assign class labels if we are doing classification.
       char* curr_pdb_name = new char[256];
@@ -6667,10 +6672,24 @@ public:
 	    char temp[100];
 	    strcpy(temp, atom_names[counter].c_str());
 	    pdb2grd::atom_values_name = temp;
-	    
+	    //TODO FIX ME
 	    pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
+	    //Now determine the atoms in the pocket and put them in an RNArray.
+	    RNArray<PDBAtom *> rot_atoms = rot_pdb->Model(0)->atoms;
+	    RNArray<PDBAtom*>* pocket_atoms = new RNArray<PDBAtom*>();
+	    //Get the pocket atoms
+	    for(int i = 0; i < rot_atoms.NEntries(); i++) {
+	      if(rot_atoms.Kth(i)->Value() == 1.0) {
+		pocket_atoms->Insert(rot_atoms.Kth(i));
+	      }
+	    }
+	    //Generate centroid 
+	    R3Point pocket_centroid = PDBCentroid(*pocket_atoms);
+	    pdb2grd::world_center = &pocket_centroid;
+
 	    datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	    pdb2grd::use_atom_values = FALSE;
+	    delete pocket_atoms;
 	}
 	else { //Rasterize all protein atoms
 	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
