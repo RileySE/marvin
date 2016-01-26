@@ -6672,7 +6672,6 @@ public:
 	    char temp[100];
 	    strcpy(temp, atom_names[counter].c_str());
 	    pdb2grd::atom_values_name = temp;
-	    //TODO FIX ME
 	    pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
 	    //Now determine the atoms in the pocket and put them in an RNArray.
 	    RNArray<PDBAtom *> rot_atoms = rot_pdb->Model(0)->atoms;
@@ -6686,7 +6685,6 @@ public:
 	    //Generate centroid 
 	    R3Point pocket_centroid = PDBCentroid(*pocket_atoms);
 	    pdb2grd::world_center = &pocket_centroid;
-
 	    datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	    pdb2grd::use_atom_values = FALSE;
 	    delete pocket_atoms;
