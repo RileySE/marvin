@@ -6332,7 +6332,7 @@ public:
     std::vector<std::string> seen_labels; //The ligand label names we've seen, which have class # equal to their index.
     std::string class_labels_file; //a file containing a numeric label for each pdb in pdb_name_file, used for classification.
     bool use_pocket_as_data; //Flag to use the binding pocket(specified in the atom_names file) as the input data instead of the entire protein.
-    bool random; //to shuffle or not to shuffle, that is the question.
+    //    bool random; //to shuffle or not to shuffle, that is the question.
 
     int numofitems() {
       return pdb_names.size();
@@ -6471,38 +6471,6 @@ public:
       else { //if we're using pockets, we don't need as large of a radius.
 	pdb2grd::world_radius = 10;
       }
-      /*
-      //Before we shuffle, we need to assign class labels if we are doing classification.
-      char* curr_pdb_name = new char[256];
-      
-      for(int c = 0; c < pdb_names.size(); c++) {
-
-	strcpy(curr_pdb_name, pdb_names[c].c_str());
-      
-	PDBFile* curr_pdb = pdb2grd::ReadPDB(curr_pdb_name);	
-	if(!curr_pdb) {
-	  RNFail("Unable to allocate PDB file for %s", curr_pdb_name);
-	}
-
-
-	for(int modelnum = 0; modelnum < curr_pdb->NModels(); modelnum++) {
-	  const PDBModel* curr_model = curr_pdb->Model(modelnum);
-	  for(int resnum = curr_model->NResidues() - 1; resnum >= 0; resnum--) {
-	    //std::cout<<"residue "<<resnum<<" is "<<curr_model->Residue(resnum)->Name()<<std::endl;
-	    if(curr_model->Residue(resnum)->HasHetAtoms()) {
-	    
-	      if(std::find(seen_labels.begin(), seen_labels.end(), (std::string)(curr_model->Residue(resnum)->Name())) == seen_labels.end()) { //if we have not seen this ligand before, push it back
-		seen_labels.push_back((std::string)(curr_model->Residue(resnum)->Name()));
-	      }	      
-	      break;
-	    }
-	  
-	  }
-	}
-	delete curr_pdb;
-      }
-      delete[] curr_pdb_name;
-      */
 
       if (phase!=Testing) shuffle();
       
@@ -6515,7 +6483,7 @@ public:
 
 
     PDBDataLayer(JSON* json) {
-      SetOrDie(json, name)
+        SetOrDie(json, name)
 	SetValue(json, phase,		Training)
 	SetOrDie(json, pdb_name_file)
 	SetValue(json, batch_size,	64)
@@ -6539,9 +6507,13 @@ public:
 
 
     size_t Malloc(Phase phase_){
-      std::cout<<"phase is "<<phase<<" and phase_ is "<<phase_<<std::endl;
+      //std::cout<<"phase is "<<phase<<" and phase_ is "<<phase_<<std::endl;
       if (phase == Training && phase_==Testing) return 0;
       
+      if (!in.empty()){   std::cout<<"PDBDataLayer shouldn't have any in's"<<std::endl; FatalError(__LINE__); }
+      if (out.empty()){   std::cout<<"PDBDataLayer should have some out's"<<std::endl; FatalError(__LINE__); }
+      if (out.size()!=2){  std::cout<<"PDBDataLayer: # of out's should be 2"<<std::endl; FatalError(__LINE__); }
+
       size_t memoryBytes = 0;
       
       std::cout<< (train_me? "* " : "  ");
@@ -6604,8 +6576,12 @@ public:
 
       prefetch();
 
-      checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
       checkCUDA(__LINE__, cudaMemcpy(out[0]->dataGPU, dataCPU->CPUmem, batch_size * dataCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      /*      for(int i = 0; i<batch_size * labelCPU->sizeofitem(); i++) {
+	std::cout<<"label is "<<labelCPU->CPUmem[i]<<std::endl;
+      }*/
+
       
     };
 
@@ -6646,6 +6622,7 @@ public:
 	PDBFile* curr_pdb = pdb2grd::ReadPDB(curr_pdb_name);
 	
 	//Do a random rotation of the pdb for data augmentation.
+
 	
 	PDBFile* rot_pdb = pdbrotate::RotatePDB(curr_pdb);
 	
@@ -6655,7 +6632,7 @@ public:
 	
 	//	pdb2grd::pdb_name = curr_pdb_name; //set pdb2grd name just in case it matters
 	
-	//	std::cout<<"adding pdb name "<<pdb_name<<std::endl;
+	//std::cout<<"adding pdb name "<<curr_pdb_name<<std::endl;
 	//Generate grid from PDB
 	
 	//Set parameters for pdb2grd
@@ -6792,7 +6769,7 @@ public:
       
       //check for having exactly finished the data set, which should only come into play for testing.
       //Need to reset counter so future testing iterations can run properly.
-      if(counter == num_pdbs) {
+      if(counter >= num_pdbs) {
 	counter = 0;
       }
       
