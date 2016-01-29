@@ -87,6 +87,7 @@
 #include "grdscale/grdscale.cpp"
 #include "pdbrotate/pdbrotate.cpp"
 #include "grd2gedt/grd2gedt.cpp"
+#include "grd2drt/grd2drt.cpp"
 
 namespace marvin {
 
@@ -2714,6 +2715,7 @@ public:
   class PDBDataLayer : public DataLayer {
     Tensor<StorageT>* dataCPU;
     Tensor<StorageT>* labelCPU;
+    Tensor<StorageT>* bbCPU;
 
   public:
 
@@ -2732,6 +2734,8 @@ public:
     std::vector<std::string> seen_labels; //The ligand label names we've seen, which have class # equal to their index.
     std::string class_labels_file; //a file containing a numeric label for each pdb in pdb_name_file, used for classification.
     bool use_pocket_as_data; //Flag to use the binding pocket(specified in the atom_names file) as the input data instead of the entire protein.
+    int num_pockets_per_pdb; //How many pockets to propose for each pdb.
+    int pocket_side_length; //The length of each dimension of the cube surrounding a dart pocket proposal.
     bool random; //to shuffle or not to shuffle, that is the question.
 
     int numofitems() {
@@ -2840,7 +2844,12 @@ public:
       
       //Do the same for labelCPU
       std::vector<int> labelCPU_dims;
-      labelCPU_dims.push_back(batch_size);
+      if(num_pockets_per_pdb != 0) {
+	labelCPU_dims.push_back(batch_size * num_pockets_per_pdb);
+      }
+      else {
+	labelCPU_dims.push_back(batch_size);
+      }
       labelCPU_dims.push_back(1);
       labelCPU_dims.push_back(label_dims[0]);
       labelCPU_dims.push_back(label_dims[1]);
@@ -2856,6 +2865,20 @@ public:
       //      for(int i = 0; i<labelCPU->dim.size();i++) {
       //std::cout<<"labelcpu dim "<<i<<" is "<<labelCPU->dim[i]<<" and datacpu is "<<dataCPU->dim[i]<<std::endl;
       //}
+
+      //If using pocket bb's, allocate bbCPU
+      if(num_pockets_per_pdb != 0) {
+	std::vector<int> bbCPU_dims;
+	bbCPU_dims.push_back(batch_size * num_pockets_per_pdb);
+	bbCPU_dims.push_back(7); //batch index, minX,maxX,minY,maxY,minZ,maxZ
+	bbCPU_dims.push_back(1);
+	bbCPU_dims.push_back(1);
+	bbCPU_dims.push_back(1);
+	
+	bbCPU = new Tensor<StorageT>(bbCPU_dims);
+	bbCPU->print(veci(0));
+	std::cout<<"    "; bbCPU->printRange();
+      }
 
       //Set pdb rotation range from input
       pdbrotate::magnitude = data_aug_max_rot;
@@ -2895,6 +2918,8 @@ public:
 	SetValue(json, do_classification, false)
 	SetValue(json, class_labels_file, "")
 	SetValue(json, use_pocket_as_data, false)
+	SetValue(json, num_pockets_per_pdb, 0)
+	SetValue(json, pocket_side_length, 10)
 	SetValue(json, random, true)
 	init();
     };
@@ -2977,7 +3002,13 @@ public:
       prefetch();
 
       checkCUDA(__LINE__, cudaMemcpy(out[0]->dataGPU, dataCPU->CPUmem, batch_size * dataCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
-      checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      if(num_pockets_per_pdb != 0) {
+	checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * num_pockets_per_pdb * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+	checkCUDA(__LINE__, cudaMemcpy(out[2]->dataGPU, bbCPU->CPUmem, batch_size * num_pockets_per_pdb * bbCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      }
+      else {
+	checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
+      }
       /*      for(int i = 0; i<batch_size * labelCPU->sizeofitem(); i++) {
 	std::cout<<"label is "<<labelCPU->CPUmem[i]<<std::endl;
       }*/
@@ -3062,6 +3093,7 @@ public:
 	    //Generate centroid 
 	    R3Point pocket_centroid = PDBCentroid(*pocket_atoms);
 	    pdb2grd::world_center = &pocket_centroid;
+	    //	    pdb2grd::use_atom_values = FALSE; //Uncomment to use a slice of the entire pdb rather than only the pocket atoms.
 	    datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	    pdb2grd::use_atom_values = FALSE;
 	    delete pocket_atoms;
@@ -3070,6 +3102,54 @@ public:
 	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	}
 
+	//If we are generating pocket proposals, do so.
+	if(num_pockets_per_pdb != 0) {
+	  RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements); //use default values for variables.
+	  RNArray<grd2drt::Dart *> *darts = NULL;
+	  //Again, defaults. May need to change this later.
+	  darts = grd2drt::CreateDarts(datagrid, num_pockets_per_pdb, grd2drt::min_spacing, grd2drt::max_spacing, grd2drt::nspacings, grd2drt::local_maxima_only, 0); 
+
+	  //Now load the darts into bbCPU to be forwarded.
+	  for(int dind = 0; dind < darts->NEntries(); dind++) {
+	    //Need to get dart min and max based on its position.
+	    int dx = darts->Kth(dind)->grid_position.X();
+	    int dy = darts->Kth(dind)->grid_position.Y();
+	    int dz = darts->Kth(dind)->grid_position.Z();
+	    int minx =  std::max(dx - pocket_side_length/2, 0);
+	    int miny =  std::max(dy - pocket_side_length/2, 0);
+	    int minz =  std::max(dz - pocket_side_length/2, 0);
+	    int maxx = std::min(dx + pocket_side_length/2, datagrid->XResolution());
+	    int maxy = std::min(dy + pocket_side_length/2, datagrid->YResolution());
+	    int maxz = std::min(dz + pocket_side_length/2, datagrid->ZResolution());
+
+	    int cpumem_index = count * num_pockets_per_pdb * 7;
+	    bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
+	    bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
+	    bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
+	    bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
+	    bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
+	    bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
+	    bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
+
+	    //Next, figure out the labels for each bb and load those into labelCPU
+	    //For now, the label is 1 if the distance from the nearest ligand atom is <= 4 and 0 if > 4
+	    int labelval = 0;
+	    for (int i = 0; i < ligand_atoms->NEntries(); i++) {
+	      PDBAtom *atom = ligand_atoms->Kth(i);
+	      if (!atom->IsHetAtom()) continue;
+	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+	      if(distance <= 4.0) {
+		labelval = 1;
+		break;
+	      }
+	    }
+	    //Put label value in labelCPU
+	    labelCPU->CPUmem[count * num_pockets_per_pdb] = (StorageT)labelval;
+	  }
+
+	}
+	
+	
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
 	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
@@ -3083,7 +3163,7 @@ public:
 	
 	//	std::cout<<"xyz spacing is "<<datagrid->WorldSpacing(0)<<std::endl;
 	
-	if(do_classification) {
+	if(do_classification && num_pockets_per_pdb == 0) {
 
           if(class_labels_file != "") {
             labelCPU->CPUmem[count] = (StorageT)class_names[counter];
@@ -3091,7 +3171,7 @@ public:
           }
       	}   
 	
-	else {
+	else if(num_pockets_per_pdb == 0) {
 	  //Determine label atoms(pocket versus ligand)
 	  
 	  R3Grid* labelgrid;
