@@ -88,6 +88,7 @@
 #include "pdbrotate/pdbrotate.cpp"
 #include "grd2gedt/grd2gedt.cpp"
 #include "grd2drt/grd2drt.cpp"
+#include "ligsite/ligsite.cpp"
 
 namespace marvin {
 
@@ -2721,8 +2722,10 @@ public:
 
     std::string pdb_name_file;
     std::string atom_file;
+    std::string darts_file; //List of filenames for .drt darts files for each pdb, as an alternative to generating them online(which is slow). Assumes pdb rotation is turned off!
     std::vector<std::string> pdb_names;
     std::vector<std::string> atom_names;
+    std::vector<std::string> dart_names;
     std::vector<int> class_names; //class ID's for classification, ordered the same as pdb_names.
     int num_pdbs;
     int batch_size;
@@ -2736,10 +2739,21 @@ public:
     bool use_pocket_as_data; //Flag to use the binding pocket(specified in the atom_names file) as the input data instead of the entire protein.
     int num_pockets_per_pdb; //How many pockets to propose for each pdb.
     int pocket_side_length; //The length of each dimension of the cube surrounding a dart pocket proposal.
+    float ligand_distance_threshold; //The max distance a pocket center can be from any atom of the ligand and still be considered "in the ligand's pocket"
+    int num_negatives_per_positive; //For region proposal, how many negative examples should be included per positive example?
+    int world_radius; //The radius in angstroms around the centroid of the pdb which should be included in the grid. Defaults to 50.
+    std::string output_data_basename; //Base filename for outputting pdbs/grd's/drt's/bboxes produced during prefetch. If undefined, no output is produced.
+    float min_pocket_volume; //The minimum volume counted as a number of voxels for a pocket to be considered during region proposal. Defaults to 5.
+    bool verbose; //Toggles debug printing
     bool random; //to shuffle or not to shuffle, that is the question.
 
     int numofitems() {
-      return pdb_names.size();
+      if(num_pockets_per_pdb != 0) {
+	return pdb_names.size() * num_pockets_per_pdb;
+      }
+      else {
+	return pdb_names.size();
+      }
     };
 
     //Called once at network creation?
@@ -2759,7 +2773,9 @@ public:
 
 
 	  pdb_names.push_back(std::string(temp));
-	  std::cout<<temp<<std::endl;
+	  if(verbose) {
+	    std::cout<<temp<<std::endl;
+	  }
 	  namestream.getline(temp, 1024); //Read until newline in file, put result into temp.
 	}
 	namebuffer.close();
@@ -2787,7 +2803,9 @@ public:
 	    
 	    
 	    atom_names.push_back(std::string(temp));
-	    std::cout<<temp<<std::endl;
+	    if(verbose) {
+	      std::cout<<temp<<std::endl;
+	    }
 	    atomnamestream.getline(temp, 1024); //Read until newline in file, put result into temp.
 	  }
 	  atomnamebuffer.close();
@@ -2812,7 +2830,9 @@ public:
 	  while (classlabelstream) {	    
 	    
 	    class_names.push_back(atoi(temp)); //convert value to int and store
-	    //	    std::cout<<temp<<std::endl;
+	    if(verbose) {
+	      std::cout<<temp<<std::endl;
+	    }
 	    classlabelstream.getline(temp, 1024); //Read until newline in file, put result into temp.
 	  }
 	  classlabelbuffer.close();
@@ -2821,6 +2841,33 @@ public:
 	
 	else {
 	  std::cout<<"ERROR! Could not read class label file "<<class_labels_file<<std::endl;
+	}
+	
+      }
+
+
+      //Load file listing dart files.
+      //Should be in the same order as the pdbs.
+      if(darts_file != "") {
+	std::filebuf dartnamebuffer;
+	if(dartnamebuffer.open(darts_file,std::ios::in)) {
+	  std::istream dartnamestream(&dartnamebuffer);
+	  
+	  char temp[256];
+	  dartnamestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  while (dartnamestream) {
+	    	    
+	    dart_names.push_back(std::string(temp));
+	    if(verbose) {
+	      std::cout<<temp<<std::endl;
+	    }
+	    dartnamestream.getline(temp, 1024); //Read until newline in file, put result into temp.
+	  }
+	  dartnamebuffer.close();
+	  
+	}
+	else {
+	  std::cout<<"ERROR! Could not read dart name file "<<darts_file<<std::endl;
 	}
 	
       }
@@ -2861,10 +2908,12 @@ public:
       std::cout<<"    "; labelCPU->printRange();
       while (labelCPU->dim.size()<dataCPU->dim.size())
 	labelCPU->dim.push_back(1);
-      //      std::cout<<"labelCPU dim size is "<<labelCPU->dim.size()<<std::endl;
-      //      for(int i = 0; i<labelCPU->dim.size();i++) {
-      //std::cout<<"labelcpu dim "<<i<<" is "<<labelCPU->dim[i]<<" and datacpu is "<<dataCPU->dim[i]<<std::endl;
-      //}
+      if(verbose) {
+	std::cout<<"labelCPU dim size is "<<labelCPU->dim.size()<<std::endl;
+	for(int i = 0; i<labelCPU->dim.size();i++) {
+	  std::cout<<"labelcpu dim "<<i<<" is "<<labelCPU->dim[i]<<" and datacpu is "<<dataCPU->dim[i]<<std::endl;
+	}
+      }
 
       //If using pocket bb's, allocate bbCPU
       if(num_pockets_per_pdb != 0) {
@@ -2887,13 +2936,7 @@ public:
       pdb2grd::grid_spacing = 1;
 
       //Set world radius(in angstroms) for pdb2grd
-      //NOTE: This needs to be large enough to hold all proteins we see, or their extremal elements will be left out!
-      if(!use_pocket_as_data) {
-	pdb2grd::world_radius = 50;
-      }
-      else { //if we're using pockets, we don't need as large of a radius.
-	pdb2grd::world_radius = 10;
-      }
+      pdb2grd::world_radius = world_radius;
 
       if (phase!=Testing) shuffle();
       
@@ -2920,6 +2963,13 @@ public:
 	SetValue(json, use_pocket_as_data, false)
 	SetValue(json, num_pockets_per_pdb, 0)
 	SetValue(json, pocket_side_length, 10)
+	SetValue(json, ligand_distance_threshold, 6)
+	SetValue(json, num_negatives_per_positive, 1)
+	SetValue(json, world_radius, 30)
+	SetValue(json, output_data_basename, "")
+	SetValue(json, min_pocket_volume, 5)
+	SetValue(json, darts_file, "")
+	SetValue(json, verbose, false)
 	SetValue(json, random, true)
 	init();
     };
@@ -2928,16 +2978,16 @@ public:
     ~PDBDataLayer(){
       delete dataCPU;
       delete labelCPU;
+      delete bbCPU;
     };
 
 
     size_t Malloc(Phase phase_){
-      //std::cout<<"phase is "<<phase<<" and phase_ is "<<phase_<<std::endl;
       if (phase == Training && phase_==Testing) return 0;
       
       if (!in.empty()){   std::cout<<"PDBDataLayer shouldn't have any in's"<<std::endl; FatalError(__LINE__); }
       if (out.empty()){   std::cout<<"PDBDataLayer should have some out's"<<std::endl; FatalError(__LINE__); }
-      if (out.size()!=2){  std::cout<<"PDBDataLayer: # of out's should be 2"<<std::endl; FatalError(__LINE__); }
+      if (out.size()<2){  std::cout<<"PDBDataLayer: # of out's should be at least 2"<<std::endl; FatalError(__LINE__); }
 
       size_t memoryBytes = 0;
       
@@ -2952,14 +3002,107 @@ public:
       out[0]->receptive_offset.resize(data_dim.size()-2);	fill_n(out[0]->receptive_offset.begin(),data_dim.size()-2,0);
       memoryBytes += out[0]->Malloc(data_dim);
       
-      
-      out[1]->need_diff = false;
-      std::vector<int> label_dim= labelCPU->dim;
-      label_dim[0] = batch_size;
-      memoryBytes += out[1]->Malloc(label_dim);
+      if(num_pockets_per_pdb == 0) {
+	out[1]->need_diff = false;
+	std::vector<int> label_dim= labelCPU->dim;
+	label_dim[0] = batch_size;
+	memoryBytes += out[1]->Malloc(label_dim);
+      }
+      else { //Allocate label and bbox outputs for region proposal
+	out[1]->need_diff = false;
+	std::vector<int> label_dim= labelCPU->dim;
+	label_dim[0] = batch_size * num_pockets_per_pdb;
+	memoryBytes += out[1]->Malloc(label_dim);
+
+	out[2]->need_diff = false;
+	std::vector<int> bb_dim= bbCPU->dim;
+	bb_dim[0] = batch_size * num_pockets_per_pdb;
+	memoryBytes += out[2]->Malloc(bb_dim);
+      }
       
       return memoryBytes;
     };
+
+
+    //Taken from the GAPS siteview app
+    //method to read in .drt darts files and structs to store them in.
+    struct Dart {
+      RNScalar value;
+      R3Point position;
+      RNBoolean hit;
+    };
+    
+    struct Darts {
+      RNArray<Dart *> darts;
+      R3Box bbox;
+    };
+
+    static Darts *
+    ReadDarts(const char *filename)
+    {
+      // Start statistics
+      RNTime start_time;
+      start_time.Read();
+      
+      // Open dart file
+      FILE *fp = fopen(filename, "r");
+      if (!fp) {
+	fprintf(stderr, "Unable to open dart file: %s\n", filename);
+	return NULL;
+      }
+      
+      // Read header line
+      int ndarts, dart_nhits, nligands, ligand_nhits, first_hit;
+      if (fscanf(fp, "%d%d%d%d%d", &ndarts, &dart_nhits, &nligands, &ligand_nhits, &first_hit) != 5) {
+	fprintf(stderr, "Unable to read dart file: %s\n", filename);
+	return NULL;
+      }
+      
+      // Create struct for darts
+      Darts *darts = new Darts();
+      if (!darts) {
+	fprintf(stderr, "Unable to allocate struct for dart file: %s\n", filename);
+	return NULL;
+      }
+      
+      // Read darts
+      for (int i = 0; i < ndarts; i++) {
+	char buffer[64];
+	int index, dummy, atom_id, residue_id, hit;
+	RNScalar value, x, y, z, residue_distance, atom_distance; 
+	if (fscanf(fp, "%s%d%lf%lf%lf%lf%s%d%d%lf%lf%d%d%d%d", buffer, &index, &value, &x, &y, &z,
+		   buffer, &residue_id, &atom_id, &residue_distance, &atom_distance, &hit, &dummy, &dummy, &dummy) != 15) {
+	  fprintf(stderr, "Error reading dart file %s at line %d\n", filename, i+2);
+	  return NULL;
+	}
+	
+	// Create dart
+	Dart *dart = new Dart();
+	dart->value = value;
+	dart->position = R3Point(x, y, z);
+	dart->hit = hit;
+	
+	// Add dart to darts
+	darts->darts.Insert(dart);
+	darts->bbox.Union(dart->position);
+      }
+      
+      // Close dart file
+      fclose(fp);
+      
+      // Print statistics
+      /*
+      if (verbose) {
+	printf("Read dart file %s ...\n", filename);
+	printf("  Time = %.2f seconds\n", start_time.Elapsed());
+	printf("  # Darts = %d\n", ndarts);
+	fflush(stdout);
+      }
+      */
+
+      // Return darts
+      return darts;
+    }
     
     //based on tensor permute(), given a vector specifying an order of indices, 
     std::vector<std::string> permute_names(std::vector<size_t> v, std::vector<std::string> target){
@@ -3009,9 +3152,11 @@ public:
       else {
 	checkCUDA(__LINE__, cudaMemcpy(out[1]->dataGPU, labelCPU->CPUmem, batch_size * labelCPU->sizeofitem() * sizeofStorageT, cudaMemcpyHostToDevice) );
       }
-      /*      for(int i = 0; i<batch_size * labelCPU->sizeofitem(); i++) {
-	std::cout<<"label is "<<labelCPU->CPUmem[i]<<std::endl;
-      }*/
+      if(verbose) {
+	for(int i = 0; i<batch_size * labelCPU->sizeofitem(); i++) {
+	  std::cout<<"label is "<<labelCPU->CPUmem[i]<<std::endl;
+	}
+      }
 
       
     };
@@ -3026,7 +3171,9 @@ public:
       if(counter + batch_size >= num_pdbs) {
 	++epoch;
 	if(phase!=Testing) {
-	  // std::cout<<"shuffling!"<<std::endl;
+	  if(verbose) {
+	    std::cout<<"shuffling!"<<std::endl;
+	  }
 	  shuffle();
 	  counter = 0;
 	}
@@ -3038,18 +3185,25 @@ public:
       
       //	pdb2grd::print_verbose = 1;
       char* curr_pdb_name = new char[256];
+
+
       //Do batch_size times:
       for(int count=0; count < batch_size; count++) {
 	
-	//      std::cout<<"starting prefetch iteration"<<std::endl;
-	//	std::cout<<"num_pdbs is "<<num_pdbs<<" counter is "<<counter<<std::endl;
-	
+	if(verbose) {
+	  std::cout<<"starting prefetch iteration"<<std::endl;
+	  std::cout<<"num_pdbs is "<<num_pdbs<<" counter is "<<counter<<std::endl;
+	}
 	
 	
 	//Load PDB file with gaps
 	
 	strcpy(curr_pdb_name, pdb_names[counter].c_str());
 	
+	//determine output file name for this protein
+	std::string pdb_basename = pdb_names[counter].substr(pdb_names[counter].find_last_of("/") + 1);	
+	pdb_basename.erase(pdb_basename.rfind(".pdb"));
+
 	PDBFile* curr_pdb = pdb2grd::ReadPDB(curr_pdb_name);
 	
 	//Do a random rotation of the pdb for data augmentation.
@@ -3060,10 +3214,18 @@ public:
 	if(!rot_pdb) {
 	  RNFail("Unable to allocate PDB file for %s", curr_pdb_name);
 	}
-	
+
+
+	if(output_data_basename != "") {
+	  rot_pdb->WriteFile((output_data_basename + pdb_basename + std::string(".pdb")).c_str());
+	}
+
+
 	//	pdb2grd::pdb_name = curr_pdb_name; //set pdb2grd name just in case it matters
 	
-	//std::cout<<"adding pdb name "<<curr_pdb_name<<std::endl;
+	if(verbose) {
+	  std::cout<<"adding pdb name "<<curr_pdb_name<<std::endl;
+	}
 	//Generate grid from PDB
 	
 	//Set parameters for pdb2grd
@@ -3101,54 +3263,6 @@ public:
 	else { //Rasterize all protein atoms
 	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	}
-
-	//If we are generating pocket proposals, do so.
-	if(num_pockets_per_pdb != 0) {
-	  RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements); //use default values for variables.
-	  RNArray<grd2drt::Dart *> *darts = NULL;
-	  //Again, defaults. May need to change this later.
-	  darts = grd2drt::CreateDarts(datagrid, num_pockets_per_pdb, grd2drt::min_spacing, grd2drt::max_spacing, grd2drt::nspacings, grd2drt::local_maxima_only, 0); 
-
-	  //Now load the darts into bbCPU to be forwarded.
-	  for(int dind = 0; dind < darts->NEntries(); dind++) {
-	    //Need to get dart min and max based on its position.
-	    int dx = darts->Kth(dind)->grid_position.X();
-	    int dy = darts->Kth(dind)->grid_position.Y();
-	    int dz = darts->Kth(dind)->grid_position.Z();
-	    int minx =  std::max(dx - pocket_side_length/2, 0);
-	    int miny =  std::max(dy - pocket_side_length/2, 0);
-	    int minz =  std::max(dz - pocket_side_length/2, 0);
-	    int maxx = std::min(dx + pocket_side_length/2, datagrid->XResolution());
-	    int maxy = std::min(dy + pocket_side_length/2, datagrid->YResolution());
-	    int maxz = std::min(dz + pocket_side_length/2, datagrid->ZResolution());
-
-	    int cpumem_index = count * num_pockets_per_pdb * 7;
-	    bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
-	    bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
-	    bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
-	    bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
-	    bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
-	    bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
-	    bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
-
-	    //Next, figure out the labels for each bb and load those into labelCPU
-	    //For now, the label is 1 if the distance from the nearest ligand atom is <= 4 and 0 if > 4
-	    int labelval = 0;
-	    for (int i = 0; i < ligand_atoms->NEntries(); i++) {
-	      PDBAtom *atom = ligand_atoms->Kth(i);
-	      if (!atom->IsHetAtom()) continue;
-	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
-	      if(distance <= 4.0) {
-		labelval = 1;
-		break;
-	      }
-	    }
-	    //Put label value in labelCPU
-	    labelCPU->CPUmem[count * num_pockets_per_pdb] = (StorageT)labelval;
-	  }
-
-	}
-	
 	
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
@@ -3160,16 +3274,276 @@ public:
 	//	R3Grid* scaleddatagrid = gedtgrid;
 	//delete datagrid;
 	datagrid = scaleddatagrid;
+
+	if(output_data_basename != "") {
+	  datagrid->WriteFile((output_data_basename + pdb_basename + std::string(".grd")).c_str());
+	}
+
+	//If we are generating pocket proposals, do so.
+	if(num_pockets_per_pdb != 0) {
+
+	  RNArray<grd2drt::Dart *> *darts = NULL;
+
+	  int num_included = 0; //The number of darts set to be forwarded.
+
+	  //determine ligand centroid for setting dart labels
+	  RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements); //use default values for variables.
+	  //Generate centroid 
+	  R3Point lig_centroid = PDBCentroid(*ligand_atoms);
+
+
+	  /*
+	  //The baseline ground truth ligand density region(i.e. the ligand itself)
+	  //For now, assume the first dart is the ligand center(usually should be)
+	  pdb2grd::site_type = 1; //ligand atoms rather than protein.
+	  R3Grid* liggrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	  pdb2grd::site_type = 0;	  
+
+	  RNArray<grd2drt::Dart *> *ligdarts = grd2drt::CreateDarts(liggrid, 5, grd2drt::min_spacing, grd2drt::max_spacing, grd2drt::nspacings, grd2drt::local_maxima_only, 0);
+
+	  //Get info on the first ground truth dart(assumed to be within the ligand)
+	  if(ligdarts->NEntries() != 0) {
+	    int dx = ligdarts->Kth(0)->grid_position.X();
+	    int dy = ligdarts->Kth(0)->grid_position.Y();
+	    int dz = ligdarts->Kth(0)->grid_position.Z();
+	    int minx =  std::max(dx - pocket_side_length/2, 0);
+	    int miny =  std::max(dy - pocket_side_length/2, 0);
+	    int minz =  std::max(dz - pocket_side_length/2, 0);
+	    int maxx = std::min(dx + pocket_side_length/2, datagrid->XResolution());
+	    int maxy = std::min(dy + pocket_side_length/2, datagrid->YResolution());
+	    int maxz = std::min(dz + pocket_side_length/2, datagrid->ZResolution());
+
+	    //Put the ground truth dart into the forwarding arrays 
+	    labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)1;
+	    int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
+	    bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
+	    bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
+	    bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
+	    bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
+	    bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
+	    bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
+	    bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
+	    
+	    num_included++;
+	  }
+	    delete liggrid;
+*/
+
+	  //Either load darts from a drt file, or generate some.
+	  R3Grid* reference_grid = NULL; //Which grid to use for coordinate lookups and such when processing darts(differs between darts from file and generated darts)
+	  R3Grid* ligsitegrid = NULL; //grid generated by a ligsite run, if we use it.
+	  if(darts_file != "") {
+	    Darts* dartlist = ReadDarts(dart_names[counter].c_str());
+	    //Need to convert the dart struct this reads into the grd2drt dart format for compatability.
+	    const R3Affine& grid_trans = datagrid->WorldToGridTransformation();
+	    for(int i = 0; i < dartlist->darts.NEntries(); i++) {
+	      grd2drt::Dart* newdart  = new grd2drt::Dart();
+	      newdart->index = dartlist->darts.Kth(i)->hit;
+	      newdart->value = dartlist->darts.Kth(i)->value;
+	      newdart->world_position = dartlist->darts.Kth(i)->position;
+	      //need to apply worldtogrid transformation from datagrid to get the grid positions for this dart.
+	      //Note: This assumes that the grid used to generate these darts was generated using the same parameters as datagrid here. If this is not true, the darts will be in incorrect positions!
+	      dartlist->darts.Kth(i)->position.Transform(grid_trans);
+	      newdart->grid_position = dartlist->darts.Kth(i)->position;
+	      darts->Insert(newdart);
+	    }
+	    reference_grid = datagrid;
+	    delete dartlist;
+	  }
+
+	  //generate darts using ligsite
+	  else {
+	    memcpy( ligsite::grid_resolution, &data_dims[0], sizeof( int ) * data_dims.size() );
+	    ligsite::world_radius = world_radius;
+	    ligsitegrid = ligsite::CreateGrid(rot_pdb);
+	    
+	    ligsitegrid->Blur();
+	    /*
+	      R3Grid* scaledligsitegrid = grdscale::CreateScaledGrid(ligsitegrid);
+	      delete ligsitegrid;
+	      ligsitegrid = scaledligsitegrid;
+	    */
+	    
+	    if(output_data_basename != "") {
+	      ligsitegrid->WriteFile((output_data_basename + pdb_basename + std::string("_ligsite.grd")).c_str());
+	    }
+	    
+	    //Probably something like 1 positive/5 negatives is a good ratio.
+	    
+	    //Setting the number of darts to generate to be a very large number so as to ensure sufficient positives are produced.
+	    //	  darts = grd2drt::CreateDarts(datagrid, num_pockets_per_pdb*1000, grd2drt::min_spacing, grd2drt::max_spacing, grd2drt::nspacings, grd2drt::local_maxima_only, 0); 
+	    grd2drt::min_spacing = ligand_distance_threshold;
+	    grd2drt::max_spacing = ligand_distance_threshold * 2;
+	    grd2drt::min_cavity_volume = min_pocket_volume;
+	    
+	    //	  grd2drt::print_debug = TRUE;
+	    if(num_negatives_per_positive == -1) {
+	      darts = grd2drt::CreateDarts(ligsitegrid, num_pockets_per_pdb, grd2drt::min_spacing, grd2drt::min_cavity_radius, grd2drt::min_cavity_volume); 
+	    } 
+	    else {
+	      darts = grd2drt::CreateDarts(ligsitegrid, num_pockets_per_pdb*100, grd2drt::min_spacing, grd2drt::min_cavity_radius, grd2drt::min_cavity_volume);
+	    }
+	    
+	    reference_grid = ligsitegrid;
+	  }
+	    
+	  //If we have no darts, create one centered on the centroid of the protein
+	  if(darts->NEntries() == 0) {
+	    grd2drt::Dart* decoy = new grd2drt::Dart();
+	    
+	    decoy->index = 0;
+	    decoy->value = 1;
+	    decoy->grid_position = R3Point(reference_grid->XResolution()/2, reference_grid->YResolution()/2, reference_grid->ZResolution()/2);
+	    decoy->world_position = rot_pdb->Centroid();
+	    darts->Insert(decoy);
+	  }
+	  
+	  //If we don't have enough darts generated for the given input, duplicate those we do have.
+	  if(darts->NEntries() < num_pockets_per_pdb) {
+	    int diff = num_pockets_per_pdb - darts->NEntries();
+	    int currind = 0;
+	    for(int c = 0; c < diff; c++) {
+	      darts->Insert(darts->Kth(currind));
+	      currind++;
+	      if(currind >= darts->NEntries()) {
+		currind = 0;
+	      }
+	    }
+	  }
+	  
+	  if(output_data_basename != "") {
+	    grd2drt::WriteDarts(*darts, reference_grid, rot_pdb, ligand_atoms, (output_data_basename + pdb_basename + std::string(".drt")).c_str());
+	  }
+	  
+	  int total_positives = 0; //Need to count the number of positives for this protein so we can add extra negatives if we need to.
+	  if(num_negatives_per_positive != -1) {
+	    for(int dind = 0; dind < darts->NEntries(); dind++) {
+	      //Need to get dart min and max based on its position.
+	      int dx = darts->Kth(dind)->grid_position.X();
+	      int dy = darts->Kth(dind)->grid_position.Y();
+	      int dz = darts->Kth(dind)->grid_position.Z();
+	      int minx =  std::max(dx - pocket_side_length/2, 0);
+	      int miny =  std::max(dy - pocket_side_length/2, 0);
+	      int minz =  std::max(dz - pocket_side_length/2, 0);
+	      int maxx = std::min(dx + pocket_side_length/2, reference_grid->XResolution());
+	      int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
+	      int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
+	      
+	      
+	      //Next, figure out the labels for each bb and load those into labelCPU
+	      //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
+	      int labelval = 0;
+	      
+	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
+	      if(distance <= ligand_distance_threshold) {
+		labelval = 1;
+		total_positives++;
+	      }
+	      
+	      /* old method, distance from nearest ligand atom rather than from centroid
+		 for (int i = 0; i < ligand_atoms->NEntries(); i++) {
+		 PDBAtom *atom = ligand_atoms->Kth(i);
+		 if (!atom->IsHetAtom()) continue;
+		 RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+		 if(distance <= ligand_distance_threshold) {
+		 labelval = 1;
+		 total_positives++;
+		 break;
+		 }
+		 }
+	      */
+	    }
+	  }
+	  //Now load the darts into bbCPU to be forwarded.
+	  int num_positives_seen = 0; //For class balancing
+	  int num_negatives_included = 0;
+	  int num_positives_to_select = total_positives;
+	  //Want up to but no more than the selected ratio of positives
+	  if(num_negatives_per_positive != -1 && total_positives > num_pockets_per_pdb/(num_negatives_per_positive + 1)) {
+	    num_positives_to_select = num_pockets_per_pdb/(num_negatives_per_positive + 1);
+	  }
+	  for(int dind = 0; dind < darts->NEntries(); dind++) {
+	    //Need to get dart min and max based on its position.
+	    int dx = darts->Kth(dind)->grid_position.X();
+	    int dy = darts->Kth(dind)->grid_position.Y();
+	    int dz = darts->Kth(dind)->grid_position.Z();
+	    int minx =  std::max(dx - pocket_side_length/2, 0);
+	    int miny =  std::max(dy - pocket_side_length/2, 0);
+	    int minz =  std::max(dz - pocket_side_length/2, 0);
+	    int maxx = std::min(dx + pocket_side_length/2, reference_grid->XResolution());
+	    int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
+	    int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
+	    
+	    
+	    //Next, figure out the labels for each bb and load those into labelCPU
+	    //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
+	    int labelval = 0;
+	    
+	    RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
+	    if(distance <= ligand_distance_threshold) {
+	      labelval = 1;
+	    }
+	    
+	    /*  old method, distance from nearest ligand atom rather than from centroid
+		for (int i = 0; i < ligand_atoms->NEntries(); i++) {
+		PDBAtom *atom = ligand_atoms->Kth(i);
+		if (!atom->IsHetAtom()) continue;
+		RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+		if(distance <= ligand_distance_threshold) {
+		labelval = 1;
+		break;
+		}
+		}
+	    */
+	    //Put label value in labelCPU and bb coords in bbCPU
+	    if(num_negatives_per_positive == -1 || (labelval == 1 && num_positives_seen < num_positives_to_select)) { //if positive, always include
+	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
+	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
+	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
+	      bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
+	      bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
+	      bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
+	      bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
+	      bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
+	      bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
+	      
+	      num_included++;	      
+	      num_positives_seen++;
+	    }
+	    else if(num_negatives_included < num_pockets_per_pdb - num_positives_to_select) { //If negative, include if we have less than the total quota.
+	      //	    else if(num_included < num_pockets_per_pdb) { //If negative, include if we have less than the total quota.
+	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
+	      
+	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
+	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
+	      bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
+	      bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
+	      bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
+	      bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
+	      bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
+	      bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
+	      
+	      num_negatives_included++;
+	      num_included++;
+	    }
+	    if(num_included > num_pockets_per_pdb) {
+	      break;
+	    }
+	  }
+
+	    delete ligsitegrid;
+	  
+	}
 	
-	//	std::cout<<"xyz spacing is "<<datagrid->WorldSpacing(0)<<std::endl;
 	
 	if(do_classification && num_pockets_per_pdb == 0) {
-
-          if(class_labels_file != "") {
-            labelCPU->CPUmem[count] = (StorageT)class_names[counter];
-	    //	    std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
-          }
-      	}   
+	  if(class_labels_file != "") {
+	    labelCPU->CPUmem[count] = (StorageT)class_names[counter];
+	    if(verbose) {
+	      std::cout<<"class for pdb "<<curr_pdb_name<<" is "<<labelCPU->CPUmem[count]<<std::endl;
+	    }
+	  }
+	}   
 	
 	else if(num_pockets_per_pdb == 0) {
 	  //Determine label atoms(pocket versus ligand)
