@@ -2743,6 +2743,7 @@ public:
     int num_negatives_per_positive; //For region proposal, how many negative examples should be included per positive example?
     int world_radius; //The radius in angstroms around the centroid of the pdb which should be included in the grid. Defaults to 50.
     std::string output_data_basename; //Base filename for outputting pdbs/grd's/drt's/bboxes produced during prefetch. If undefined, no output is produced.
+    std::string output_label_file; //The name of the file to write dart labels to for selected darts, in the order they are selected. This is used to allow analysis of testing results. Defaults to "labels.out"
     float min_pocket_volume; //The minimum volume counted as a number of voxels for a pocket to be considered during region proposal. Defaults to 5.
     bool verbose; //Toggles debug printing
     bool random; //to shuffle or not to shuffle, that is the question.
@@ -2969,6 +2970,7 @@ public:
 	SetValue(json, output_data_basename, "")
 	SetValue(json, min_pocket_volume, 5)
 	SetValue(json, darts_file, "")
+	SetValue(json, output_label_file, "labels.out")
 	SetValue(json, verbose, false)
 	SetValue(json, random, true)
 	init();
@@ -3188,6 +3190,8 @@ public:
 	  counter -= diff;
 	}
       }
+
+      std::ofstream labelstream(output_label_file,std::ofstream::app);
       
       //	pdb2grd::print_verbose = 1;
       char* curr_pdb_name = new char[256];
@@ -3238,7 +3242,7 @@ public:
 	//Set parameters for pdb2grd
 	memcpy( pdb2grd::grid_resolution, &data_dims[0], sizeof( int ) * data_dims.size() );
 	pdb2grd::rasterization_type = 1; //solid shape density
-	//	pdb2grd::rasterization_type = 2; //Protein Surface
+	//pdb2grd::rasterization_type = 2; //Protein Surface
 	pdb2grd::site_type = 0; //protein atoms
 
 	
@@ -3273,18 +3277,18 @@ public:
 	}
 
 	//Do signed distance transform(grid becomes distance from the surface of the protein(positive outside negative inside)
-	//	datagrid->SignedDistanceTransform();
+	//datagrid->SignedDistanceTransform();
 	datagrid->Threshold(1, 0, 1);
 	
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
-	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
-		R3Grid* gedtgrid = datagrid;
+	//R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
+	R3Grid* gedtgrid = datagrid;
 	
 	//Scale values to be between 0 and 1.
 	//R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
 	R3Grid* scaleddatagrid = NULL;
-	//delete datagrid;
+	//	delete datagrid;
 	//datagrid = scaleddatagrid;
 
 	if(output_data_basename != "") {
@@ -3619,6 +3623,10 @@ public:
 		std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
 		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
 	      }
+	      if(phase != Training) {
+		labelstream<<labelval<<std::endl;
+	      }
+
 	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
 	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
 	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
@@ -3642,8 +3650,11 @@ public:
 		std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
 		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
 	      }
-	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
-	      
+	      if(phase != Training) {
+		labelstream<<labelval<<std::endl;
+	      }
+
+	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;	      
 	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
 	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
 	      bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
@@ -3766,6 +3777,8 @@ public:
       if(counter >= num_pdbs) {
 	counter = 0;
       }
+
+	labelstream.close();
       
     } //end prefetch
     
