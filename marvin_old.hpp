@@ -3479,7 +3479,7 @@ public:
 	      //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
 	      int labelval = 0;
 	      
-	      /*
+	      
 	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
 	      if(distance <= ligand_distance_threshold) {
 		labelval = 1;
@@ -3489,8 +3489,8 @@ public:
 		labelval = 0;
 		total_negatives++;
 	      }
-	      */
 	      
+	      /*	      
 	      // old method, distance from nearest ligand atom rather than from centroid
 	      for (int i = 0; i < ligand_atoms->NEntries(); i++) {
 		PDBAtom *atom = ligand_atoms->Kth(i);
@@ -3505,6 +3505,7 @@ public:
 	      if(labelval == 0) {
 		total_negatives++;
 	      }
+	      */
 	      
 	    }
 	  }
@@ -3551,6 +3552,7 @@ public:
 	    int currind = 0;
 	    int num_added = 0;
 	    while(num_added < diff) {
+	      /*
 	      for (int i = 0; i < ligand_atoms->NEntries(); i++) {
 		PDBAtom *atom = ligand_atoms->Kth(i);
 		if (!atom->IsHetAtom()) continue;
@@ -3561,13 +3563,14 @@ public:
 		  break;
 		}
 	      }
-	      /*
+	      */
+	      
 	      RNLength distance = R3Distance(darts->Kth(currind)->world_position, lig_centroid);
 	      if(distance > ligand_distance_threshold) {
 		darts->Insert(darts->Kth(currind));
 		num_added++;
 	      }
-	      */
+	      
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3598,14 +3601,15 @@ public:
 	    //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
 	    int labelval = 0;
 	    
-	    /*
+	    
 	    RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
 	    if(distance <= ligand_distance_threshold) {
 	      labelval = 1;
 	    }
-	    */
+	    
 	    
 	    //  old method, distance from nearest ligand atom rather than from centroid
+	    /*
 	    for (int i = 0; i < ligand_atoms->NEntries(); i++) {
 	      PDBAtom *atom = ligand_atoms->Kth(i);
 	      if (!atom->IsHetAtom()) continue;
@@ -3615,6 +3619,7 @@ public:
 		break;
 	      }
 	    }
+	    */
 	    
 	    //Put label value in labelCPU and bb coords in bbCPU
 	    if(labelval == 1 && (num_negatives_per_positive == -1 || num_positives_seen < num_positives_to_select || total_negatives == 0)) {
