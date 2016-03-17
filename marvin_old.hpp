@@ -3290,8 +3290,8 @@ public:
 	//Scale values to be between 0 and 1.
 	//R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
 	R3Grid* scaleddatagrid = NULL;
-	//	delete datagrid;
-	datagrid = scaleddatagrid;
+	//delete datagrid;
+	//datagrid = scaleddatagrid;
 
 	if(output_data_basename != "") {
 	  datagrid->WriteFile((output_data_basename + pdb_basename + std::string(".grd")).c_str());
@@ -3816,7 +3816,7 @@ public:
 	//delete things
 	delete curr_pdb;
 	//	delete rot_pdb;
-	//	delete gedtgrid;
+	//delete gedtgrid;
 	  //delete scaleddatagrid;
 	delete datagrid;
 
