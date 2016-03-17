@@ -2745,6 +2745,7 @@ public:
     std::string output_data_basename; //Base filename for outputting pdbs/grd's/drt's/bboxes produced during prefetch. If undefined, no output is produced.
     std::string output_label_file; //The name of the file to write dart labels to for selected darts, in the order they are selected. This is used to allow analysis of testing results. Defaults to "labels.out"
     float min_pocket_volume; //The minimum volume counted as a number of voxels for a pocket to be considered during region proposal. Defaults to 5.
+    std::string distance_metric; //The metric to use for measuring pocket inclusion or exclusion for a proposed center, either from nearest ligand atom or from ligand centroid. Defaults to nearest atom.
     bool verbose; //Toggles debug printing
     bool random; //to shuffle or not to shuffle, that is the question.
 
@@ -2971,6 +2972,7 @@ public:
 	SetValue(json, min_pocket_volume, 5)
 	SetValue(json, darts_file, "")
 	SetValue(json, output_label_file, "labels.out")
+	SetValue(json, distance_metric, "atom")
 	SetValue(json, verbose, false)
 	SetValue(json, random, true)
 	init();
@@ -3282,14 +3284,14 @@ public:
 	
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
-	//R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
+	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
 	R3Grid* gedtgrid = datagrid;
 	
 	//Scale values to be between 0 and 1.
 	//R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
 	R3Grid* scaleddatagrid = NULL;
 	//	delete datagrid;
-	//datagrid = scaleddatagrid;
+	datagrid = scaleddatagrid;
 
 	if(output_data_basename != "") {
 	  datagrid->WriteFile((output_data_basename + pdb_basename + std::string(".grd")).c_str());
@@ -3313,15 +3315,37 @@ public:
 	  int num_negatives_to_select = 1;
 
 
-	  //determine ligand centroid for setting dart labels
-	  RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements); //use default values for variables.
-	  //Generate centroid 
-	  R3Point lig_centroid = PDBCentroid(*ligand_atoms);
-	  //	  const R3Affine& grid_trans = datagrid->WorldToGridTransformation();
-	  //	  lig_centroid.Transform(grid_trans);
+	  RNArray<PDBAtom *> *all_ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, NULL, grd2drt::element, grd2drt::nelements);
+	  //determine ligand centroids for setting dart labels
+	  //Iterate through residues to find ligand hetatom residues, and calculate a centroid coordinate for each.
+	  std::vector<R3Point> lig_centroids;
+	  //	  RNArray<R3Point*>* lig_centroids = new RNArray<R3Point*>();
+	  for(int resnum = 0; resnum < rot_pdb->Model(0)->NResidues(); resnum++) {
+	    PDBResidue* curr_resi = rot_pdb->Model(0)->Residue(resnum);
+	    //Assuming the indicator for a ligand to be the presence of hetatoms
+	    if(curr_resi->HasHetAtoms()) {
+	      RNArray<PDBAtom*>* ligand_atoms = new RNArray<PDBAtom*>();
+	      for (int j = 0; j < curr_resi->NAtoms(); j++) {
+		PDBAtom *atom = curr_resi->Atom(j);
+		ligand_atoms->Insert(atom);
+	      }
+	      //Generate centroid 
+	      lig_centroids.push_back(PDBCentroid(*ligand_atoms));
+	      //	      delete[] ligand_atoms;
+	      //	      char temp[100];
+	      //	      strcpy(temp, curr_resi->Name());
+	      //	      grd2drt::ligand_name = temp;
+	      //	      RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements);
+
+	      //	      delete[] temp;
+	    }
+	  }	      
+
 
 	  if(verbose) {
-	    std::cout<<"Ligand centroid is at "<<lig_centroid.X()<<" "<<lig_centroid.Y()<<" "<<lig_centroid.Z()<<std::endl;
+	    for(int cent = 0; cent < lig_centroids.size(); cent++) {
+	      std::cout<<"Ligand centroid is at "<<lig_centroids[cent].X()<<" "<<lig_centroids[cent].Y()<<" "<<lig_centroids[cent].Z()<<std::endl;
+	    }
 	  }
 
 	  //Uncomment to use the ligand ground truth as a bounding box
@@ -3457,7 +3481,7 @@ public:
 	  }
 	  
 	  if(output_data_basename != "") {
-	    grd2drt::WriteDarts(*darts, reference_grid, rot_pdb, ligand_atoms, (output_data_basename + pdb_basename + std::string(".drt")).c_str());
+	    grd2drt::WriteDarts(*darts, reference_grid, rot_pdb, all_ligand_atoms, (output_data_basename + pdb_basename + std::string(".drt")).c_str());
 	  }
 	  
 
@@ -3479,33 +3503,35 @@ public:
 	      //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
 	      int labelval = 0;
 	      
-	      
-	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
-	      if(distance <= ligand_distance_threshold) {
-		labelval = 1;
-		total_positives++;
-	      }
-	      else {
-		labelval = 0;
-		total_negatives++;
-	      }
-	      
-	      /*	      
-	      // old method, distance from nearest ligand atom rather than from centroid
-	      for (int i = 0; i < ligand_atoms->NEntries(); i++) {
-		PDBAtom *atom = ligand_atoms->Kth(i);
-		if (!atom->IsHetAtom()) continue;
-		RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
-		if(distance <= ligand_distance_threshold) {
-		  labelval = 1;
-		  total_positives++;
-		  break;
+	      if(distance_metric == "centroid") {
+		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
+		  R3Point curr_cent = lig_centroids[centroid];
+		  RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
+		  if(distance <= ligand_distance_threshold) {
+		    labelval = 1;
+		    total_positives++;
+		    break;
+		  }
+		}
+		if(labelval == 0) {
+		  total_negatives++;
 		}
 	      }
-	      if(labelval == 0) {
-		total_negatives++;
+	      else if(distance_metric == "atom") {
+		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
+		  PDBAtom *atom = all_ligand_atoms->Kth(i);
+		  if (!atom->IsHetAtom()) continue;
+		  RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+		  if(distance <= ligand_distance_threshold) {
+		    labelval = 1;
+		    total_positives++;
+		    break;
+		  }
+		}
+		if(labelval == 0) {
+		  total_negatives++;
+		}
 	      }
-	      */
 	      
 	    }
 	  }
@@ -3531,14 +3557,27 @@ public:
 	    int currind = 0;
 	    int num_added = 0;
 	    while(num_added < diff) {
-	      for (int i = 0; i < ligand_atoms->NEntries(); i++) {
-		PDBAtom *atom = ligand_atoms->Kth(i);
-		if (!atom->IsHetAtom()) continue;
-		RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
-		if(distance <= ligand_distance_threshold) {
-		  darts->Insert(darts->Kth(currind));
-		  num_added++;
-		  break;
+	      if(distance_metric == "centroid") {
+		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
+		  R3Point curr_cent = lig_centroids[centroid];
+		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, curr_cent);
+		  if(distance < ligand_distance_threshold) {
+		    darts->Insert(darts->Kth(currind));
+		    num_added++;
+		    break;
+		  }
+		}
+	      }
+	      else if(distance_metric == "atom") {
+		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
+		  PDBAtom *atom = all_ligand_atoms->Kth(i);
+		  if (!atom->IsHetAtom()) continue;
+		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
+		  if(distance <= ligand_distance_threshold) {
+		    darts->Insert(darts->Kth(currind));
+		    num_added++;
+		    break;
+		  }
 		}
 	      }
 	      currind++;
@@ -3552,25 +3591,31 @@ public:
 	    int currind = 0;
 	    int num_added = 0;
 	    while(num_added < diff) {
-	      /*
-	      for (int i = 0; i < ligand_atoms->NEntries(); i++) {
-		PDBAtom *atom = ligand_atoms->Kth(i);
-		if (!atom->IsHetAtom()) continue;
-		RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
-		if(distance > ligand_distance_threshold) {
-		  darts->Insert(darts->Kth(currind));
-		  num_added++;
-		  break;
+
+	      if(distance_metric == "centroid") {
+		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
+		  R3Point curr_cent = lig_centroids[centroid];
+		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, curr_cent);
+		  if(distance > ligand_distance_threshold) {
+		    darts->Insert(darts->Kth(currind));
+		    num_added++;
+		    break;
+		  }
 		}
 	      }
-	      */
-	      
-	      RNLength distance = R3Distance(darts->Kth(currind)->world_position, lig_centroid);
-	      if(distance > ligand_distance_threshold) {
-		darts->Insert(darts->Kth(currind));
-		num_added++;
+	      else if(distance_metric == "atom") {
+		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
+		  PDBAtom *atom = all_ligand_atoms->Kth(i);
+		  if (!atom->IsHetAtom()) continue;
+		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
+		  if(distance > ligand_distance_threshold) {
+		    darts->Insert(darts->Kth(currind));
+		    num_added++;
+		    break;
+		  }
+		}
 	      }
-	      
+
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3601,25 +3646,27 @@ public:
 	    //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
 	    int labelval = 0;
 	    
-	    
-	    RNLength distance = R3Distance(darts->Kth(dind)->world_position, lig_centroid);
-	    if(distance <= ligand_distance_threshold) {
-	      labelval = 1;
-	    }
-	    
-	    
-	    //  old method, distance from nearest ligand atom rather than from centroid
-	    /*
-	    for (int i = 0; i < ligand_atoms->NEntries(); i++) {
-	      PDBAtom *atom = ligand_atoms->Kth(i);
-	      if (!atom->IsHetAtom()) continue;
-	      RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
-	      if(distance <= ligand_distance_threshold) {
-		labelval = 1;
-		break;
+	    if(distance_metric == "centroid") {
+	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
+		R3Point curr_cent = lig_centroids[centroid];
+		RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
+		if(distance <= ligand_distance_threshold) {
+		  labelval = 1;
+		  break;
+		}
 	      }
 	    }
-	    */
+	    else if(distance_metric == "atom") {
+	      for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
+		PDBAtom *atom = all_ligand_atoms->Kth(i);
+		if (!atom->IsHetAtom()) continue;
+		RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+		if(distance <= ligand_distance_threshold) {
+		  labelval = 1;
+		  break;
+		}
+	      }
+	    }
 	    
 	    //Put label value in labelCPU and bb coords in bbCPU
 	    if(labelval == 1 && (num_negatives_per_positive == -1 || num_positives_seen < num_positives_to_select || total_negatives == 0)) {
@@ -3649,7 +3696,6 @@ public:
 	      }
 	    }
 	    else if(labelval == 0 && (num_negatives_included < num_negatives_to_select || total_positives == 0 || num_negatives_per_positive == -1)) { //If negative, include if we have less than the total quota.
-	      //	    else if(num_included < num_pockets_per_pdb) { //If negative, include if we have less than the total quota.
 	      if(verbose) {
 		std::cout<<"selected negative"<<std::endl;
 		std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
@@ -3680,7 +3726,7 @@ public:
 	    }
 	  }
 	  if(output_data_basename != "") {
-	    grd2drt::WriteDarts(*outdarts, reference_grid, rot_pdb, ligand_atoms, (output_data_basename + pdb_basename + std::string("_selected.drt")).c_str());
+	    grd2drt::WriteDarts(*outdarts, reference_grid, rot_pdb, all_ligand_atoms, (output_data_basename + pdb_basename + std::string("_selected.drt")).c_str());
 	  }
 
 	  delete ligsitegrid;
@@ -3773,6 +3819,7 @@ public:
 	//	delete gedtgrid;
 	  //delete scaleddatagrid;
 	delete datagrid;
+
 	
       }
       delete[] curr_pdb_name;
