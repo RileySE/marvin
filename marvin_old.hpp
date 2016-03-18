@@ -3315,11 +3315,10 @@ public:
 	  int num_negatives_to_select = 1;
 
 
-	  RNArray<PDBAtom *> *all_ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, NULL, grd2drt::element, grd2drt::nelements);
+	  RNArray<PDBAtom *> *all_ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements);
 	  //determine ligand centroids for setting dart labels
 	  //Iterate through residues to find ligand hetatom residues, and calculate a centroid coordinate for each.
 	  std::vector<R3Point> lig_centroids;
-	  //	  RNArray<R3Point*>* lig_centroids = new RNArray<R3Point*>();
 	  for(int resnum = 0; resnum < rot_pdb->Model(0)->NResidues(); resnum++) {
 	    PDBResidue* curr_resi = rot_pdb->Model(0)->Residue(resnum);
 	    //Assuming the indicator for a ligand to be the presence of hetatoms
@@ -3331,13 +3330,6 @@ public:
 	      }
 	      //Generate centroid 
 	      lig_centroids.push_back(PDBCentroid(*ligand_atoms));
-	      //	      delete[] ligand_atoms;
-	      //	      char temp[100];
-	      //	      strcpy(temp, curr_resi->Name());
-	      //	      grd2drt::ligand_name = temp;
-	      //	      RNArray<PDBAtom *> *ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements);
-
-	      //	      delete[] temp;
 	    }
 	  }	      
 
@@ -3345,6 +3337,10 @@ public:
 	  if(verbose) {
 	    for(int cent = 0; cent < lig_centroids.size(); cent++) {
 	      std::cout<<"Ligand centroid is at "<<lig_centroids[cent].X()<<" "<<lig_centroids[cent].Y()<<" "<<lig_centroids[cent].Z()<<std::endl;
+	    }
+	    std::cout<<"Ligand atoms are: "<<std::endl;
+	    for(int atom = 0; atom < all_ligand_atoms->NEntries(); atom++) {
+	      std::cout<<all_ligand_atoms->Kth(atom)->Name()<<std::endl;
 	    }
 	  }
 
@@ -3483,57 +3479,70 @@ public:
 	  if(output_data_basename != "") {
 	    grd2drt::WriteDarts(*darts, reference_grid, rot_pdb, all_ligand_atoms, (output_data_basename + pdb_basename + std::string(".drt")).c_str());
 	  }
+
+
+	  //Determine dart labels.	  
+	  std::vector<int> labelvals;
+
+	  for(int dind = 0; dind < darts->NEntries(); dind++) {
+	    //Need to get dart min and max based on its position.
+	    int dx = darts->Kth(dind)->grid_position.X();
+	    int dy = darts->Kth(dind)->grid_position.Y();
+	    int dz = darts->Kth(dind)->grid_position.Z();
+	    int minx =  std::max(dx - pocket_side_length/2, 0);
+	    int miny =  std::max(dy - pocket_side_length/2, 0);
+	    int minz =  std::max(dz - pocket_side_length/2, 0);
+	    int maxx = std::min(dx + pocket_side_length/2, reference_grid->XResolution());
+	    int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
+	    int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
+	    
+	    int curr_labelval = 0;
+	    
+	    //Next, figure out the labels for each bb and load those into labelCPU
+	    /*
+	    if(distance_metric == "centroid") {
+	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
+		R3Point curr_cent = lig_centroids[centroid];
+		RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
+		if(verbose) {
+		  std::cout<<"centroid distance was "<<distance<<std::endl;
+		}
+		if(distance <= ligand_distance_threshold) {
+		  curr_labelval = 1;
+		  total_positives++;
+		  break;
+		}
+	      }
+	      if(curr_labelval == 0) {
+		total_negatives++;
+	      }
+	    }
+	    else if(distance_metric == "atom") {
+	    */
+	      for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
+		PDBAtom *atom = all_ligand_atoms->Kth(i);
+		if (!atom->IsHetAtom()) continue;
+		RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
+		//		if(verbose) {
+		  //		  std::cout<<"atom distance was "<<distance<<std::endl;
+		  //		}
+		if(distance <= ligand_distance_threshold) {
+		  curr_labelval = 1;
+		  total_positives++;
+		  break;
+		}
+	      }
+	      if(curr_labelval == 0) {
+		total_negatives++;
+	      }
+	      //}
+	    labelvals.push_back(curr_labelval);
+	    
+	  }
 	  
 
-	  if(num_negatives_per_positive != -1) {
-	    for(int dind = 0; dind < darts->NEntries(); dind++) {
-	      //Need to get dart min and max based on its position.
-	      int dx = darts->Kth(dind)->grid_position.X();
-	      int dy = darts->Kth(dind)->grid_position.Y();
-	      int dz = darts->Kth(dind)->grid_position.Z();
-	      int minx =  std::max(dx - pocket_side_length/2, 0);
-	      int miny =  std::max(dy - pocket_side_length/2, 0);
-	      int minz =  std::max(dz - pocket_side_length/2, 0);
-	      int maxx = std::min(dx + pocket_side_length/2, reference_grid->XResolution());
-	      int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
-	      int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
-	      
-	      
-	      //Next, figure out the labels for each bb and load those into labelCPU
-	      //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
-	      int labelval = 0;
-	      
-	      if(distance_metric == "centroid") {
-		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
-		  R3Point curr_cent = lig_centroids[centroid];
-		  RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
-		  if(distance <= ligand_distance_threshold) {
-		    labelval = 1;
-		    total_positives++;
-		    break;
-		  }
-		}
-		if(labelval == 0) {
-		  total_negatives++;
-		}
-	      }
-	      else if(distance_metric == "atom") {
-		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
-		  PDBAtom *atom = all_ligand_atoms->Kth(i);
-		  if (!atom->IsHetAtom()) continue;
-		  RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
-		  if(distance <= ligand_distance_threshold) {
-		    labelval = 1;
-		    total_positives++;
-		    break;
-		  }
-		}
-		if(labelval == 0) {
-		  total_negatives++;
-		}
-	      }
-	      
-	    }
+	  if(verbose) {
+	    std::cout<<"total dart labels is "<<labelvals.size()<<std::endl;
 	  }
 
 	  //Now load the darts into bbCPU to be forwarded.
@@ -3557,6 +3566,12 @@ public:
 	    int currind = 0;
 	    int num_added = 0;
 	    while(num_added < diff) {
+	      if(labelvals[currind] == 1) {
+		darts->Insert(darts->Kth(currind));
+		labelvals.push_back(labelvals[currind]);
+		num_added++;
+	      }
+	      /*
 	      if(distance_metric == "centroid") {
 		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
 		  R3Point curr_cent = lig_centroids[centroid];
@@ -3580,6 +3595,7 @@ public:
 		  }
 		}
 	      }
+	      */
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3591,7 +3607,12 @@ public:
 	    int currind = 0;
 	    int num_added = 0;
 	    while(num_added < diff) {
-
+	      if(labelvals[currind] == 0) {
+		darts->Insert(darts->Kth(currind));
+		labelvals.push_back(labelvals[currind]);
+		num_added++;
+	      }
+	      /*
 	      if(distance_metric == "centroid") {
 		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
 		  R3Point curr_cent = lig_centroids[centroid];
@@ -3615,7 +3636,7 @@ public:
 		  }
 		}
 	      }
-
+	      */
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3644,8 +3665,9 @@ public:
 	    
 	    //Next, figure out the labels for each bb and load those into labelCPU
 	    //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
-	    int labelval = 0;
 	    
+	    int labelval = labelvals[dind];
+	    /*
 	    if(distance_metric == "centroid") {
 	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
 		R3Point curr_cent = lig_centroids[centroid];
@@ -3667,7 +3689,8 @@ public:
 		}
 	      }
 	    }
-	    
+	    */
+
 	    //Put label value in labelCPU and bb coords in bbCPU
 	    if(labelval == 1 && (num_negatives_per_positive == -1 || num_positives_seen < num_positives_to_select || total_negatives == 0)) {
 	      if(verbose) {
