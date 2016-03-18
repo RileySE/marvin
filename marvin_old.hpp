@@ -3499,12 +3499,13 @@ public:
 	    int curr_labelval = 0;
 	    
 	    //Next, figure out the labels for each bb and load those into labelCPU
-	    /*
+	    
 	    if(distance_metric == "centroid") {
 	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
 		R3Point curr_cent = lig_centroids[centroid];
 		RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
 		if(verbose) {
+		  std::cout<<"centroid is "<<curr_cent.X()<<" "<<curr_cent.Y()<<" "<<curr_cent.Z()<<std::endl;
 		  std::cout<<"centroid distance was "<<distance<<std::endl;
 		}
 		if(distance <= ligand_distance_threshold) {
@@ -3517,8 +3518,7 @@ public:
 		total_negatives++;
 	      }
 	    }
-	    else if(distance_metric == "atom") {
-	    */
+	    else if(distance_metric == "atom") {	    
 	      for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
 		PDBAtom *atom = all_ligand_atoms->Kth(i);
 		if (!atom->IsHetAtom()) continue;
@@ -3535,7 +3535,7 @@ public:
 	      if(curr_labelval == 0) {
 		total_negatives++;
 	      }
-	      //}
+	    }
 	    labelvals.push_back(curr_labelval);
 	    
 	  }
