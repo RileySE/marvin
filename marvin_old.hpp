@@ -3546,9 +3546,6 @@ public:
 	  }
 
 	  //Now load the darts into bbCPU to be forwarded.
-	  //	  num_positives_to_select = total_positives;
-	  //Want up to but no more than the selected ratio of positives
-	  //	  if(num_negatives_per_positive != -1 && total_positives > num_pockets_per_pdb/(num_negatives_per_positive + 1)) {
 	  num_positives_to_select = num_pockets_per_pdb/(num_negatives_per_positive + 1);
 	  num_negatives_to_select = num_pockets_per_pdb - num_positives_to_select;
 
@@ -3571,31 +3568,7 @@ public:
 		labelvals.push_back(labelvals[currind]);
 		num_added++;
 	      }
-	      /*
-	      if(distance_metric == "centroid") {
-		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
-		  R3Point curr_cent = lig_centroids[centroid];
-		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, curr_cent);
-		  if(distance < ligand_distance_threshold) {
-		    darts->Insert(darts->Kth(currind));
-		    num_added++;
-		    break;
-		  }
-		}
-	      }
-	      else if(distance_metric == "atom") {
-		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
-		  PDBAtom *atom = all_ligand_atoms->Kth(i);
-		  if (!atom->IsHetAtom()) continue;
-		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
-		  if(distance <= ligand_distance_threshold) {
-		    darts->Insert(darts->Kth(currind));
-		    num_added++;
-		    break;
-		  }
-		}
-	      }
-	      */
+
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3612,31 +3585,7 @@ public:
 		labelvals.push_back(labelvals[currind]);
 		num_added++;
 	      }
-	      /*
-	      if(distance_metric == "centroid") {
-		for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
-		  R3Point curr_cent = lig_centroids[centroid];
-		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, curr_cent);
-		  if(distance > ligand_distance_threshold) {
-		    darts->Insert(darts->Kth(currind));
-		    num_added++;
-		    break;
-		  }
-		}
-	      }
-	      else if(distance_metric == "atom") {
-		for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
-		  PDBAtom *atom = all_ligand_atoms->Kth(i);
-		  if (!atom->IsHetAtom()) continue;
-		  RNLength distance = R3Distance(darts->Kth(currind)->world_position, atom->Position());
-		  if(distance > ligand_distance_threshold) {
-		    darts->Insert(darts->Kth(currind));
-		    num_added++;
-		    break;
-		  }
-		}
-	      }
-	      */
+
 	      currind++;
 	      if(currind >= darts->NEntries()) {
 		currind = 0;
@@ -3644,8 +3593,6 @@ public:
 	    }
 	  } 
 
-
-	    //	  }
 	  if(verbose) {
 	    std::cout<<"number of total darts is "<<darts->NEntries()<<std::endl;
 	  }
@@ -3662,34 +3609,9 @@ public:
 	    int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
 	    int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
 	    
-	    
-	    //Next, figure out the labels for each bb and load those into labelCPU
-	    //For now, the label is 1 if the distance from the nearest ligand atom is <= ligand_distance_threshold and 0 if > ligand_distance_threshold
-	    
+	    //Label to forward to the network	    
 	    int labelval = labelvals[dind];
-	    /*
-	    if(distance_metric == "centroid") {
-	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
-		R3Point curr_cent = lig_centroids[centroid];
-		RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
-		if(distance <= ligand_distance_threshold) {
-		  labelval = 1;
-		  break;
-		}
-	      }
-	    }
-	    else if(distance_metric == "atom") {
-	      for (int i = 0; i < all_ligand_atoms->NEntries(); i++) {
-		PDBAtom *atom = all_ligand_atoms->Kth(i);
-		if (!atom->IsHetAtom()) continue;
-		RNLength distance = R3Distance(darts->Kth(dind)->world_position, atom->Position());
-		if(distance <= ligand_distance_threshold) {
-		  labelval = 1;
-		  break;
-		}
-	      }
-	    }
-	    */
+
 
 	    //Put label value in labelCPU and bb coords in bbCPU
 	    if(labelval == 1 && (num_negatives_per_positive == -1 || num_positives_seen < num_positives_to_select || total_negatives == 0)) {
