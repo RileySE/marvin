@@ -2743,7 +2743,7 @@ public:
     int num_negatives_per_positive; //For region proposal, how many negative examples should be included per positive example?
     int world_radius; //The radius in angstroms around the centroid of the pdb which should be included in the grid. Defaults to 50.
     std::string output_data_basename; //Base filename for outputting pdbs/grd's/drt's/bboxes produced during prefetch. If undefined, no output is produced.
-    std::string output_label_file; //The name of the file to write dart labels to for selected darts, in the order they are selected. This is used to allow analysis of testing results. Defaults to "labels.out"
+    std::string test_output_basename; //The basename to use for outputting info on test darts(e.g. centroid coords, pdb name, dart ground truth labels), to be used for performance analysis. Defaults to "test".
     float min_pocket_volume; //The minimum volume counted as a number of voxels for a pocket to be considered during region proposal. Defaults to 5.
     std::string distance_metric; //The metric to use for measuring pocket inclusion or exclusion for a proposed center, either from nearest ligand atom or from ligand centroid. Defaults to nearest atom.
     bool verbose; //Toggles debug printing
@@ -2971,7 +2971,7 @@ public:
 	SetValue(json, output_data_basename, "")
 	SetValue(json, min_pocket_volume, 5)
 	SetValue(json, darts_file, "")
-	SetValue(json, output_label_file, "labels.out")
+	SetValue(json, test_output_basename, "test")
 	SetValue(json, distance_metric, "atom")
 	SetValue(json, verbose, false)
 	SetValue(json, random, true)
@@ -3192,12 +3192,17 @@ public:
 	  counter -= diff;
 	}
       }
-
-      std::ofstream labelstream(output_label_file,std::ofstream::app);
+      //      std::string output_label_file = test_output_basename + ".labels";
+      //      std::ofstream labelstream(output_label_file,std::ofstream::app);
       
       //	pdb2grd::print_verbose = 1;
       char* curr_pdb_name = new char[256];
 
+      //      std::string output_pdbname_file = test_output_basename + ".names";
+      //      std::ofstream pdbnamestream(output_pdbname_file,std::ofstream::app);
+
+      std::string output_dart_file = test_output_basename + ".darts";
+      std::ofstream dartstream(output_dart_file,std::ofstream::app);
 
       //Do batch_size times:
       for(int count=0; count < batch_size; count++) {
@@ -3284,11 +3289,11 @@ public:
 	
 	//Apply gedt distance transform
 	grd2gedt::gedt_sigma = 4.0;
-	//	R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
+	//R3Grid* gedtgrid = grd2gedt::CreateGEDTGrid(datagrid);
 	R3Grid* gedtgrid = datagrid;
 	
 	//Scale values to be between 0 and 1.
-	//R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
+	//	R3Grid* scaleddatagrid = grdscale::CreateScaledGrid(gedtgrid);
 	R3Grid* scaleddatagrid = NULL;
 	//delete datagrid;
 	//datagrid = scaleddatagrid;
@@ -3328,6 +3333,9 @@ public:
 		PDBAtom *atom = curr_resi->Atom(j);
 		ligand_atoms->Insert(atom);
 	      }
+	      if(verbose) {
+		std::cout<<"adding centroid for residue "<<curr_resi->Name()<<std::endl;
+	      }
 	      //Generate centroid 
 	      lig_centroids.push_back(PDBCentroid(*ligand_atoms));
 	    }
@@ -3338,10 +3346,10 @@ public:
 	    for(int cent = 0; cent < lig_centroids.size(); cent++) {
 	      std::cout<<"Ligand centroid is at "<<lig_centroids[cent].X()<<" "<<lig_centroids[cent].Y()<<" "<<lig_centroids[cent].Z()<<std::endl;
 	    }
-	    std::cout<<"Ligand atoms are: "<<std::endl;
-	    for(int atom = 0; atom < all_ligand_atoms->NEntries(); atom++) {
-	      std::cout<<all_ligand_atoms->Kth(atom)->Name()<<std::endl;
-	    }
+	    // std::cout<<"Ligand atoms are: "<<std::endl;
+	    //for(int atom = 0; atom < all_ligand_atoms->NEntries(); atom++) {
+	    //  std::cout<<all_ligand_atoms->Kth(atom)->Name()<<std::endl;
+	    // }
 	  }
 
 	  //Uncomment to use the ligand ground truth as a bounding box
@@ -3483,6 +3491,8 @@ public:
 
 	  //Determine dart labels.	  
 	  std::vector<int> labelvals;
+	  std::vector<int> closest_ligand;
+	  std::vector<RNLength> distances;
 
 	  for(int dind = 0; dind < darts->NEntries(); dind++) {
 	    //Need to get dart min and max based on its position.
@@ -3500,22 +3510,31 @@ public:
 	    
 	    //Next, figure out the labels for each bb and load those into labelCPU
 	    
+	    RNLength closest_distance = 9999999;
+	    int closest_centroid = -1;
 	    if(distance_metric == "centroid") {
 	      for(int centroid = 0; centroid < lig_centroids.size(); centroid++) {
 		R3Point curr_cent = lig_centroids[centroid];
 		RNLength distance = R3Distance(darts->Kth(dind)->world_position, curr_cent);
-		if(verbose) {
+		/*		if(verbose) {
 		  std::cout<<"centroid is "<<curr_cent.X()<<" "<<curr_cent.Y()<<" "<<curr_cent.Z()<<std::endl;
 		  std::cout<<"centroid distance was "<<distance<<std::endl;
+		  }*/
+		if(distance < closest_distance) {
+		  closest_distance = distance;
+		  closest_centroid = centroid;
 		}
 		if(distance <= ligand_distance_threshold) {
 		  curr_labelval = 1;
-		  total_positives++;
-		  break;
+		  //total_positives++;
+		  //break;
 		}
 	      }
 	      if(curr_labelval == 0) {
 		total_negatives++;
+	      }
+	      else {
+		total_positives++;
 	      }
 	    }
 	    else if(distance_metric == "atom") {	    
@@ -3526,17 +3545,25 @@ public:
 		//		if(verbose) {
 		  //		  std::cout<<"atom distance was "<<distance<<std::endl;
 		  //		}
+		if(distance < closest_distance) {
+		  closest_distance = distance;
+		}
 		if(distance <= ligand_distance_threshold) {
 		  curr_labelval = 1;
-		  total_positives++;
-		  break;
+		  //total_positives++;
+		  //break;
 		}
 	      }
 	      if(curr_labelval == 0) {
 		total_negatives++;
 	      }
+	      else {
+		total_positives++;
+	      }
 	    }
 	    labelvals.push_back(curr_labelval);
+	    distances.push_back(closest_distance);
+	    closest_ligand.push_back(closest_centroid);
 	    
 	  }
 	  
@@ -3546,8 +3573,10 @@ public:
 	  }
 
 	  //Now load the darts into bbCPU to be forwarded.
-	  num_positives_to_select = num_pockets_per_pdb/(num_negatives_per_positive + 1);
-	  num_negatives_to_select = num_pockets_per_pdb - num_positives_to_select;
+	  if(num_negatives_per_positive != -1) {
+	    num_positives_to_select = num_pockets_per_pdb/(num_negatives_per_positive + 1);
+	    num_negatives_to_select = num_pockets_per_pdb - num_positives_to_select;
+	  }
 
 	  if(verbose) {
 	    std::cout<<"total positives is "<<total_positives<<std::endl;
@@ -3566,6 +3595,8 @@ public:
 	      if(labelvals[currind] == 1) {
 		darts->Insert(darts->Kth(currind));
 		labelvals.push_back(labelvals[currind]);
+		distances.push_back(distances[currind]);
+		closest_ligand.push_back(closest_ligand[currind]);
 		num_added++;
 	      }
 
@@ -3583,6 +3614,8 @@ public:
 	      if(labelvals[currind] == 0) {
 		darts->Insert(darts->Kth(currind));
 		labelvals.push_back(labelvals[currind]);
+		distances.push_back(distances[currind]);
+		closest_ligand.push_back(closest_ligand[currind]);
 		num_added++;
 	      }
 
@@ -3611,6 +3644,8 @@ public:
 	    
 	    //Label to forward to the network	    
 	    int labelval = labelvals[dind];
+	    int close_lig = closest_ligand[dind];
+	    RNLength dist = distances[dind];
 
 
 	    //Put label value in labelCPU and bb coords in bbCPU
@@ -3621,7 +3656,7 @@ public:
 		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
 	      }
 	      if(phase != Training) {
-		labelstream<<labelval<<std::endl;
+		dartstream<<curr_pdb_name<<"\t"<<labelval<<"\t"<<lig_centroids.size()<<"\t"<<close_lig<<"\t"<<dist<<"\t"<<darts->Kth(dind)->world_position.X()<<"\t"<<darts->Kth(dind)->world_position.Y()<<"\t"<<darts->Kth(dind)->world_position.Z()<<std::endl;
 	      }
 
 	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
@@ -3647,7 +3682,7 @@ public:
 		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
 	      }
 	      if(phase != Training) {
-		labelstream<<labelval<<std::endl;
+		dartstream<<curr_pdb_name<<"\t"<<labelval<<"\t"<<lig_centroids.size()<<"\t"<<close_lig<<"\t"<<dist<<"\t"<<darts->Kth(dind)->world_position.X()<<"\t"<<darts->Kth(dind)->world_position.Y()<<"\t"<<darts->Kth(dind)->world_position.Z()<<std::endl;
 	      }
 
 	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;	      
@@ -3775,7 +3810,8 @@ public:
 	counter = 0;
       }
 
-	labelstream.close();
+      //	labelstream.close();
+	dartstream.close();
       
     } //end prefetch
     
