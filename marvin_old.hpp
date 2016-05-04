@@ -2746,6 +2746,10 @@ public:
     std::string test_output_basename; //The basename to use for outputting info on test darts(e.g. centroid coords, pdb name, dart ground truth labels), to be used for performance analysis. Defaults to "test".
     float min_pocket_volume; //The minimum volume counted as a number of voxels for a pocket to be considered during region proposal. Defaults to 5.
     std::string distance_metric; //The metric to use for measuring pocket inclusion or exclusion for a proposed center, either from nearest ligand atom or from ligand centroid. Defaults to nearest atom.
+    bool do_regression; //Flag to do regression on ligand centroid distances rather than binary classification. Defaults to false.
+    int max_darts; //Maximum number of darts to consider. Defaults to 100.
+    bool use_gt; //Flag to use the ground truth ligand centroid(s) as the positive dart(s) for each pdb. Defaults to false.
+    bool use_elements; //Flag to represent proteins as a set of 5 channels, one for each of C, N, O, S, and P atoms. Defaults to false.
     bool verbose; //Toggles debug printing
     bool random; //to shuffle or not to shuffle, that is the question.
 
@@ -2880,10 +2884,14 @@ public:
       //Want to give them a set of dimensions rather than a file handle.
       //Need the dataCPU dims to be nelemsXnfiltersXxXyXz
       //Only want batch_size elements in dataCPU at a time, so the first dimension is batch_size
-      //Second is always 1(I think?)
       std::vector<int> dataCPU_dims;
       dataCPU_dims.push_back(batch_size);
-      dataCPU_dims.push_back(1);
+      if(use_elements) {
+	dataCPU_dims.push_back(5);
+      }
+      else {
+	dataCPU_dims.push_back(1);
+      }
       dataCPU_dims.push_back(data_dims[0]);
       dataCPU_dims.push_back(data_dims[1]);
       dataCPU_dims.push_back(data_dims[2]);
@@ -2973,6 +2981,10 @@ public:
 	SetValue(json, darts_file, "")
 	SetValue(json, test_output_basename, "test")
 	SetValue(json, distance_metric, "atom")
+        SetValue(json, do_regression, false)
+	SetValue(json, max_darts, 100)
+	SetValue(json, use_gt, false)
+	SetValue(json, use_elements, false)
 	SetValue(json, verbose, false)
 	SetValue(json, random, true)
 	init();
@@ -3253,36 +3265,60 @@ public:
 	pdb2grd::site_type = 0; //protein atoms
 
 	
+	//Make per-element grids
+	R3Grid* Cgrid;
+	R3Grid* Ngrid;
+	R3Grid* Ogrid;
+	R3Grid* Pgrid;
+	R3Grid* Sgrid;
+	if(use_elements) {
+	  
+	  Cgrid = pdb2grd::CreateGrid(rot_pdb, NULL, &PDBelements[1]);
+	  Ngrid = pdb2grd::CreateGrid(rot_pdb, NULL, &PDBelements[2]);
+	  Ogrid = pdb2grd::CreateGrid(rot_pdb, NULL, &PDBelements[3]);
+	  Pgrid = pdb2grd::CreateGrid(rot_pdb, NULL, &PDBelements[4]);
+	  Sgrid = pdb2grd::CreateGrid(rot_pdb, NULL, &PDBelements[5]);
+
+	  Cgrid->Threshold(1, 0, 1);
+	  Ngrid->Threshold(1, 0, 1);
+	  Ogrid->Threshold(1, 0, 1);
+	  Pgrid->Threshold(1, 0, 1);
+	  Sgrid->Threshold(1, 0, 1);
+
+	  //May need to do additional normalization here.
+
+	}
+
 	//Make the grid.
 	R3Grid* datagrid;
 	if(use_pocket_as_data && atom_file != "") { //Rasterize only those atoms listed in the atoms file(expected to be the atoms around the binding pocket)
-	    pdb2grd::site_type = 0;
-	    pdb2grd::use_atom_values = TRUE;
-	    char temp[100];
-	    strcpy(temp, atom_names[counter].c_str());
-	    pdb2grd::atom_values_name = temp;
-	    pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
-	    //Now determine the atoms in the pocket and put them in an RNArray.
-	    RNArray<PDBAtom *> rot_atoms = rot_pdb->Model(0)->atoms;
-	    RNArray<PDBAtom*>* pocket_atoms = new RNArray<PDBAtom*>();
-	    //Get the pocket atoms
-	    for(int i = 0; i < rot_atoms.NEntries(); i++) {
-	      if(rot_atoms.Kth(i)->Value() == 1.0) {
-		pocket_atoms->Insert(rot_atoms.Kth(i));
-	      }
+	  pdb2grd::site_type = 0;
+	  pdb2grd::use_atom_values = TRUE;
+	  char temp[100];
+	  strcpy(temp, atom_names[counter].c_str());
+	  pdb2grd::atom_values_name = temp;
+	  pdb2grd::ReadAtomValuesFile(rot_pdb, pdb2grd::atom_values_name);
+	  //Now determine the atoms in the pocket and put them in an RNArray.
+	  RNArray<PDBAtom *> rot_atoms = rot_pdb->Model(0)->atoms;
+	  RNArray<PDBAtom*>* pocket_atoms = new RNArray<PDBAtom*>();
+	  //Get the pocket atoms
+	  for(int i = 0; i < rot_atoms.NEntries(); i++) {
+	    if(rot_atoms.Kth(i)->Value() == 1.0) {
+	      pocket_atoms->Insert(rot_atoms.Kth(i));
 	    }
-	    //Generate centroid 
-	    R3Point pocket_centroid = PDBCentroid(*pocket_atoms);
-	    pdb2grd::world_center = &pocket_centroid;
-	    //	    pdb2grd::use_atom_values = FALSE; //Uncomment to use a slice of the entire pdb rather than only the pocket atoms.
-	    datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
-	    pdb2grd::use_atom_values = FALSE;
-	    delete pocket_atoms;
+	  }
+	  //Generate centroid 
+	  R3Point pocket_centroid = PDBCentroid(*pocket_atoms);
+	  pdb2grd::world_center = &pocket_centroid;
+	  //	    pdb2grd::use_atom_values = FALSE; //Uncomment to use a slice of the entire pdb rather than only the pocket atoms.
+	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	  pdb2grd::use_atom_values = FALSE;
+	  delete pocket_atoms;
 	}
 	else { //Rasterize all protein atoms
 	  datagrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
 	}
-
+	
 	//Do signed distance transform(grid becomes distance from the surface of the protein(positive outside negative inside)
 	//datagrid->SignedDistanceTransform();
 	datagrid->Threshold(1, 0, 1);
@@ -3297,20 +3333,28 @@ public:
 	R3Grid* scaleddatagrid = NULL;
 	//delete datagrid;
 	//datagrid = scaleddatagrid;
-
+      
+      
 	if(output_data_basename != "") {
 	  datagrid->WriteFile((output_data_basename + pdb_basename + std::string(".grd")).c_str());
+	  if(use_elements) {
+	    Cgrid->WriteFile((output_data_basename + pdb_basename + std::string("-C") + std::string(".grd")).c_str());
+	    Ngrid->WriteFile((output_data_basename + pdb_basename + std::string("-N") + std::string(".grd")).c_str());
+	    Ogrid->WriteFile((output_data_basename + pdb_basename + std::string("-O") + std::string(".grd")).c_str());
+	    Pgrid->WriteFile((output_data_basename + pdb_basename + std::string("-P") + std::string(".grd")).c_str());
+	    Sgrid->WriteFile((output_data_basename + pdb_basename + std::string("-S") + std::string(".grd")).c_str());
+	  }
 	}
-
+	
 	//If we are generating pocket proposals, do so.
 	if(num_pockets_per_pdb != 0) {
-
+	  
 	  RNArray<grd2drt::Dart *> *darts = NULL;
 	  RNArray<grd2drt::Dart *> *outdarts = NULL;	  
 	  if(output_data_basename != "") {
 	    outdarts = new RNArray<grd2drt::Dart *>();
 	  }
-
+	  
 	  int num_included = 0; //The number of darts set to be forwarded.
 	  int total_positives = 0; //Need to count the number of positives for this protein so we can add extra negatives if we need to.
 	  int total_negatives = 0;
@@ -3318,8 +3362,8 @@ public:
 	  int num_negatives_included = 0;
 	  int num_positives_to_select = 1;
 	  int num_negatives_to_select = 1;
-
-
+	  
+	  
 	  RNArray<PDBAtom *> *all_ligand_atoms = grd2drt::FindLigandAtoms(rot_pdb, grd2drt::ligand_name, grd2drt::element, grd2drt::nelements);
 	  //determine ligand centroids for setting dart labels
 	  //Iterate through residues to find ligand hetatom residues, and calculate a centroid coordinate for each.
@@ -3340,7 +3384,6 @@ public:
 	      lig_centroids.push_back(PDBCentroid(*ligand_atoms));
 	    }
 	  }	      
-
 
 	  if(verbose) {
 	    for(int cent = 0; cent < lig_centroids.size(); cent++) {
@@ -3400,6 +3443,9 @@ public:
 	  if(darts_file != "") {
 	    darts = new RNArray<grd2drt::Dart*>();
 	    Darts* dartlist = ReadDarts(dart_names[counter].c_str());
+	    //Truncate the list to reduce the number of superfluous darts
+	    dartlist->darts.Truncate(max_darts);
+
 	    //Need to convert the dart struct this reads into the grd2drt dart format for compatability.
 	    const R3Affine& grid_trans = datagrid->WorldToGridTransformation();
 	    /*
@@ -3412,6 +3458,22 @@ public:
 	    const R3Affine& ligsite_trans = datagrid->WorldToGridTransformation();
 	    */
 
+	    //If we are using ligand centroids as darts, generate a dart for each centroid.
+	    if(use_gt) {
+	      for(int cent = 0; cent < lig_centroids.size(); cent++) {
+		grd2drt::Dart* newdart  = new grd2drt::Dart();
+		newdart->index = 0;
+		newdart->value = 1;
+		newdart->world_position = lig_centroids[cent];
+		//need to apply worldtogrid transformation from datagrid to get the grid positions for this dart.
+		R3Point curr_cent = lig_centroids[cent];
+		curr_cent.Transform(grid_trans);
+		newdart->grid_position = curr_cent;
+		darts->Insert(newdart);
+	      }
+	    }
+
+	    //Load darts from drt file.
 	    for(int i = 0; i < dartlist->darts.NEntries(); i++) {
 	      grd2drt::Dart* newdart  = new grd2drt::Dart();
 	      newdart->index = dartlist->darts.Kth(i)->hit;
@@ -3483,14 +3545,27 @@ public:
 	      }
 	    }
 	  }
+
+	  //Randomize the order of the darts
+	  if(random) {
+	    std::vector<size_t> v = randperm(darts->NEntries(), rng);
+	    size_t nbItems = darts->NEntries();
+	    RNArray<grd2drt::Dart *> *darts_new = new RNArray<grd2drt::Dart *>();
+	    for (size_t i=0;i<nbItems;++i){
+	      darts_new->Insert(darts->Kth(v[i]));
+	    }
+	    delete darts;
+	    darts = darts_new;
+	  }
 	  
+
 	  if(output_data_basename != "") {
 	    grd2drt::WriteDarts(*darts, reference_grid, rot_pdb, all_ligand_atoms, (output_data_basename + pdb_basename + std::string(".drt")).c_str());
 	  }
 
 
 	  //Determine dart labels.	  
-	  std::vector<int> labelvals;
+	  std::vector<float> labelvals;
 	  std::vector<int> closest_ligand;
 	  std::vector<RNLength> distances;
 
@@ -3506,7 +3581,7 @@ public:
 	    int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
 	    int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
 	    
-	    int curr_labelval = 0;
+	    float curr_labelval = 0;
 	    
 	    //Next, figure out the labels for each bb and load those into labelCPU
 	    
@@ -3524,12 +3599,21 @@ public:
 		  closest_distance = distance;
 		  closest_centroid = centroid;
 		}
-		if(distance <= ligand_distance_threshold) {
-		  curr_labelval = 1;
-		  //total_positives++;
-		  //break;
+		//If using ligand centroids as the positive darts, label positive only if distance is 0.0
+		if(use_gt) {
+		  if(distance == 0.0) {
+		    curr_labelval = 1;
+		  }
+		}
+		else {
+		  if(distance <= ligand_distance_threshold) {
+		    curr_labelval = 1;
+		    //total_positives++;
+		    //break;
+		  }
 		}
 	      }
+
 	      if(curr_labelval == 0) {
 		total_negatives++;
 	      }
@@ -3642,73 +3726,75 @@ public:
 	    int maxy = std::min(dy + pocket_side_length/2, reference_grid->YResolution());
 	    int maxz = std::min(dz + pocket_side_length/2, reference_grid->ZResolution());
 	    
-	    //Label to forward to the network	    
-	    int labelval = labelvals[dind];
+	    //Label to forward to the network
+	    float labelval;
+	    if(do_regression) {
+	      labelval = distances[dind];
+	    }
+	    else {  
+	      labelval = labelvals[dind];
+	    }
 	    int close_lig = closest_ligand[dind];
 	    RNLength dist = distances[dind];
 
 
 	    //Put label value in labelCPU and bb coords in bbCPU
-	    if(labelval == 1 && (num_negatives_per_positive == -1 || num_positives_seen < num_positives_to_select || total_negatives == 0)) {
-	      if(verbose) {
-		std::cout<<"selected positive"<<std::endl;
-		std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
-		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
+	    //Add if:
+	    if(do_regression || //doing regression
+	       num_negatives_per_positive == -1 || //not balancing data
+	       (labelval == 1 && //dart label is positive
+		(num_positives_seen < num_positives_to_select ||
+		 total_negatives == 0)) ||
+	       (labelval == 0 && //dart label is negative
+		(num_negatives_included < num_negatives_to_select ||
+		 total_positives == 0)))
+	      { 
+		if(verbose) {
+		  std::cout<<"selected label "<<labelval<<std::endl;
+		  std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
+		  std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
+		}
+		if(phase != Training) {
+		  dartstream<<curr_pdb_name<<"\t"<<dart_names[counter]<<"\t"<<labelval<<"\t"<<lig_centroids.size()<<"\t"<<close_lig<<"\t"<<dist<<"\t"<<darts->Kth(dind)->world_position.X()<<"\t"<<darts->Kth(dind)->world_position.Y()<<"\t"<<darts->Kth(dind)->world_position.Z();
+		  for(int cent = 0; cent < lig_centroids.size(); cent++) {
+		    dartstream<<"\t"<<lig_centroids[cent].X()<<"\t"<<lig_centroids[cent].Y()<<"\t"<<lig_centroids[cent].Z();
+		  }
+		  dartstream<<std::endl;
+		}
+		
+		labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
+		int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
+		bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
+		bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
+		bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
+		bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
+		bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
+		bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
+		bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
+		
+		num_included++;
+		
+		if(labelval == 1) {
+		  num_positives_seen++;
+		}
+		else if(labelval == 0) {
+		  num_negatives_included++;
+		} 
+		
+		if(output_data_basename != "") {
+		  outdarts->Insert(darts->Kth(dind));
+		}
 	      }
-	      if(phase != Training) {
-		dartstream<<curr_pdb_name<<"\t"<<labelval<<"\t"<<lig_centroids.size()<<"\t"<<close_lig<<"\t"<<dist<<"\t"<<darts->Kth(dind)->world_position.X()<<"\t"<<darts->Kth(dind)->world_position.Y()<<"\t"<<darts->Kth(dind)->world_position.Z()<<std::endl;
-	      }
-
-	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;
-	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
-	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
-	      bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
-	      bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
-	      bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
-	      bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
-	      bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
-	      bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
-	      
-	      num_included++;	      
-	      num_positives_seen++;
-	      if(output_data_basename != "") {
-		outdarts->Insert(darts->Kth(dind));
-	      }
-	    }
-	    else if(labelval == 0 && (num_negatives_included < num_negatives_to_select || total_positives == 0 || num_negatives_per_positive == -1)) { //If negative, include if we have less than the total quota.
-	      if(verbose) {
-		std::cout<<"selected negative"<<std::endl;
-		std::cout<<"coordinates are "<<darts->Kth(dind)->world_position.X()<<" "<<darts->Kth(dind)->world_position.Y()<<" "<<darts->Kth(dind)->world_position.Z()<<std::endl;
-		std::cout<<"grid coordinates are "<<darts->Kth(dind)->grid_position.X()<<" "<<darts->Kth(dind)->grid_position.Y()<<" "<<darts->Kth(dind)->grid_position.Z()<<std::endl;
-	      }
-	      if(phase != Training) {
-		dartstream<<curr_pdb_name<<"\t"<<labelval<<"\t"<<lig_centroids.size()<<"\t"<<close_lig<<"\t"<<dist<<"\t"<<darts->Kth(dind)->world_position.X()<<"\t"<<darts->Kth(dind)->world_position.Y()<<"\t"<<darts->Kth(dind)->world_position.Z()<<std::endl;
-	      }
-
-	      labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)labelval;	      
-	      int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
-	      bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
-	      bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
-	      bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
-	      bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
-	      bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
-	      bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
-	      bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
-	      
-	      num_negatives_included++;
-	      num_included++;
-	      if(output_data_basename != "") {
-		outdarts->Insert(darts->Kth(dind));
-	      }
-	    }
+	    
 	    if(num_included >= num_pockets_per_pdb) {
 	      break;
 	    }
-	  }
+	  }//End dart iteration
+
 	  if(output_data_basename != "") {
 	    grd2drt::WriteDarts(*outdarts, reference_grid, rot_pdb, all_ligand_atoms, (output_data_basename + pdb_basename + std::string("_selected.drt")).c_str());
 	  }
-
+	  
 	  delete ligsitegrid;
 	  darts->Empty(TRUE);
 	  delete darts;
@@ -3780,14 +3866,31 @@ public:
 	}
 	
 	
-	//Put PDB grid into dataCPU, label into labelCPU
-	//Dump binary from array into CPUmem
-	const RNScalar* datagrid_values = datagrid->GridValues();
-	int data_num_ele = datagrid->NEntries();
-	for( int i = 0; i < data_num_ele; i++) {
-	  dataCPU->CPUmem[count * data_num_ele + i] = (float)(datagrid_values[i]); //Add values to the <counter>'th volume's indices
+	if(use_elements) {
+	 
+	  const RNScalar* Cgrid_values = Cgrid->GridValues();
+	  const RNScalar* Ngrid_values = Ngrid->GridValues();
+	  const RNScalar* Ogrid_values = Ogrid->GridValues();
+	  const RNScalar* Pgrid_values = Pgrid->GridValues();
+	  const RNScalar* Sgrid_values = Sgrid->GridValues();
+	  int data_num_ele = Cgrid->NEntries();
+	  for( int i = 0; i < data_num_ele; i++) {
+	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 0 + i] = (float)(Cgrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 1 + i] = (float)(Ngrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 2 + i] = (float)(Ogrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 3 + i] = (float)(Pgrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 4 + i] = (float)(Sgrid_values[i]);
+	  }	  
 	}
-	
+	else {
+	  //Put PDB grid into dataCPU, label into labelCPU
+	  //Dump binary from array into CPUmem
+	  const RNScalar* datagrid_values = datagrid->GridValues();
+	  int data_num_ele = datagrid->NEntries();
+	  for( int i = 0; i < data_num_ele; i++) {
+	    dataCPU->CPUmem[count * data_num_ele + i] = (float)(datagrid_values[i]); //Add values to the <counter>'th volume's indices
+	  }
+	}
 	
 	
 	
@@ -3799,6 +3902,13 @@ public:
 	//delete gedtgrid;
 	  //delete scaleddatagrid;
 	delete datagrid;
+	if(use_elements) {
+	  delete Cgrid;
+	  delete Ngrid;
+	  delete Ogrid;
+	  delete Sgrid;
+	  delete Pgrid;
+	}
 
 	
       }
