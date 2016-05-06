@@ -3226,7 +3226,7 @@ public:
 	
 	
 	//Load PDB file with gaps
-	
+
 	strcpy(curr_pdb_name, pdb_names[counter].c_str());
 	
 	//determine output file name for this protein
@@ -3382,6 +3382,7 @@ public:
 	      }
 	      //Generate centroid 
 	      lig_centroids.push_back(PDBCentroid(*ligand_atoms));
+	      delete ligand_atoms;
 	    }
 	  }	      
 
@@ -3394,47 +3395,6 @@ public:
 	    //  std::cout<<all_ligand_atoms->Kth(atom)->Name()<<std::endl;
 	    // }
 	  }
-
-	  //Uncomment to use the ligand ground truth as a bounding box
-	  /*	  	  	  
-	  //The baseline ground truth ligand density region(i.e. the ligand itself)
-	  //For now, assume the first dart is the ligand center(usually should be)
-	  pdb2grd::site_type = 1; //ligand atoms rather than protein.
-	  R3Grid* liggrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
-	  pdb2grd::site_type = 0;	  
-	  liggrid->Blur();
-
-	  RNArray<grd2drt::Dart *> *ligdarts = grd2drt::CreateDarts(liggrid, 5, grd2drt::min_spacing, grd2drt::max_spacing, grd2drt::nspacings, grd2drt::local_maxima_only, 0);
-
-	  //Get info on the first ground truth dart(assumed to be within the ligand)
-	  if(ligdarts->NEntries() != 0) {
-	    int dx = ligdarts->Kth(0)->grid_position.X();
-	    int dy = ligdarts->Kth(0)->grid_position.Y();
-	    int dz = ligdarts->Kth(0)->grid_position.Z();
-	    int minx =  std::max(dx - pocket_side_length/2, 0);
-	    int miny =  std::max(dy - pocket_side_length/2, 0);
-	    int minz =  std::max(dz - pocket_side_length/2, 0);
-	    int maxx = std::min(dx + pocket_side_length/2, datagrid->XResolution());
-	    int maxy = std::min(dy + pocket_side_length/2, datagrid->YResolution());
-	    int maxz = std::min(dz + pocket_side_length/2, datagrid->ZResolution());
-
-	    //Put the ground truth dart into the forwarding arrays 
-	    labelCPU->CPUmem[count * num_pockets_per_pdb + num_included] = (StorageT)1;
-	    int cpumem_index = (count * num_pockets_per_pdb + num_included) * 7;
-	    bbCPU->CPUmem[cpumem_index + 0] = (StorageT)count;
-	    bbCPU->CPUmem[cpumem_index + 1] = (StorageT)minx;
-	    bbCPU->CPUmem[cpumem_index + 2] = (StorageT)maxx;
-	    bbCPU->CPUmem[cpumem_index + 3] = (StorageT)miny;
-	    bbCPU->CPUmem[cpumem_index + 4] = (StorageT)maxy;
-	    bbCPU->CPUmem[cpumem_index + 5] = (StorageT)minz;
-	    bbCPU->CPUmem[cpumem_index + 6] = (StorageT)maxz;
-	    
-	    num_included++;
-	    total_positives++;
-	    num_positives_seen++;
-	  }
-	    delete liggrid;
-	  */
 
 	  //Either load darts from a drt file, or generate some.
 	  R3Grid* reference_grid = NULL; //Which grid to use for coordinate lookups and such when processing darts(differs between darts from file and generated darts)
@@ -3554,6 +3514,7 @@ public:
 	    for (size_t i=0;i<nbItems;++i){
 	      darts_new->Insert(darts->Kth(v[i]));
 	    }
+	    darts->Empty(TRUE);
 	    delete darts;
 	    darts = darts_new;
 	  }
@@ -3798,6 +3759,9 @@ public:
 	  delete ligsitegrid;
 	  darts->Empty(TRUE);
 	  delete darts;
+	  if(output_data_basename != "") {
+	    delete outdarts;
+	  }
 	  
 	}
 	
@@ -3897,8 +3861,9 @@ public:
 	counter++;
 
 	//delete things
+	delete rot_pdb->Model(0);
+	//delete rot_pdb;
 	delete curr_pdb;
-	//	delete rot_pdb;
 	//delete gedtgrid;
 	  //delete scaleddatagrid;
 	delete datagrid;
@@ -3909,7 +3874,6 @@ public:
 	  delete Sgrid;
 	  delete Pgrid;
 	}
-
 	
       }
       delete[] curr_pdb_name;
