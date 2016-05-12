@@ -3349,6 +3349,7 @@ public:
 	//If we are generating pocket proposals, do so.
 	if(num_pockets_per_pdb != 0) {
 	  
+	  RNArray<grd2drt::Dart *> *orig_darts = NULL;
 	  RNArray<grd2drt::Dart *> *darts = NULL;
 	  RNArray<grd2drt::Dart *> *outdarts = NULL;	  
 	  if(output_data_basename != "") {
@@ -3402,6 +3403,7 @@ public:
 
 	  if(darts_file != "") {
 	    darts = new RNArray<grd2drt::Dart*>();
+	    orig_darts = new RNArray<grd2drt::Dart*>();
 	    Darts* dartlist = ReadDarts(dart_names[counter].c_str());
 	    //Truncate the list to reduce the number of superfluous darts
 	    dartlist->darts.Truncate(max_darts);
@@ -3430,6 +3432,7 @@ public:
 		curr_cent.Transform(grid_trans);
 		newdart->grid_position = curr_cent;
 		darts->Insert(newdart);
+		orig_darts->Insert(newdart);
 	      }
 	    }
 
@@ -3445,10 +3448,14 @@ public:
 	      dartlist->darts.Kth(i)->position.Transform(grid_trans);
 	      newdart->grid_position = dartlist->darts.Kth(i)->position;
 	      darts->Insert(newdart);
+	      orig_darts->Insert(newdart);
 	    }
 	    reference_grid = datagrid;
 
-	    dartlist->darts.Empty(TRUE);
+	    //dartlist->darts.Empty(TRUE);
+	    for(int d = 0; d < dartlist->darts.NEntries(); d++) {
+	      delete dartlist->darts.Kth(d);
+	    }
 	    delete dartlist;
 	  }
 
@@ -3491,6 +3498,7 @@ public:
 	    decoy->grid_position = R3Point(reference_grid->XResolution()/2, reference_grid->YResolution()/2, reference_grid->ZResolution()/2);
 	    decoy->world_position = rot_pdb->Centroid();
 	    darts->Insert(decoy);
+	    orig_darts->Insert(decoy);
 	  }
 	  
 	  //If we don't have enough darts generated for the given input, duplicate those we do have.
@@ -3514,7 +3522,6 @@ public:
 	    for (size_t i=0;i<nbItems;++i){
 	      darts_new->Insert(darts->Kth(v[i]));
 	    }
-	    darts->Empty(TRUE);
 	    delete darts;
 	    darts = darts_new;
 	  }
@@ -3757,11 +3764,18 @@ public:
 	  }
 	  
 	  delete ligsitegrid;
-	  darts->Empty(TRUE);
+	  for(int d = 0; d < orig_darts->NEntries(); d++) {
+	    delete orig_darts->Kth(d);
+	    //	    if(darts->Kth(d) != NULL) {
+	    //delete darts->Kth(d);
+	    //}
+	  }
+	  delete orig_darts;
 	  delete darts;
 	  if(output_data_basename != "") {
 	    delete outdarts;
 	  }
+	  delete all_ligand_atoms;
 	  
 	}
 	
