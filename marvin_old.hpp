@@ -2718,6 +2718,8 @@ public:
     Tensor<StorageT>* labelCPU;
     Tensor<StorageT>* bbCPU;
 
+    int num_channels;
+
   public:
 
     std::string pdb_name_file;
@@ -2750,6 +2752,7 @@ public:
     int max_darts; //Maximum number of darts to consider. Defaults to 100.
     bool use_gt; //Flag to use the ground truth ligand centroid(s) as the positive dart(s) for each pdb. Defaults to false.
     bool use_elements; //Flag to represent proteins as a set of 5 channels, one for each of C, N, O, S, and P atoms. Defaults to false.
+    bool use_hydro; //Flag to add a hydrophobic grid channel to the data representation. Defaults to false.
     bool verbose; //Toggles debug printing
     bool random; //to shuffle or not to shuffle, that is the question.
 
@@ -2885,13 +2888,21 @@ public:
       //Need the dataCPU dims to be nelemsXnfiltersXxXyXz
       //Only want batch_size elements in dataCPU at a time, so the first dimension is batch_size
       std::vector<int> dataCPU_dims;
-      dataCPU_dims.push_back(batch_size);
+
+      num_channels = 0;
       if(use_elements) {
-	dataCPU_dims.push_back(5);
+	num_channels = 5;
       }
       else {
-	dataCPU_dims.push_back(1);
+	num_channels = 1;
       }
+      if(use_hydro) {
+	num_channels++;
+      }
+
+      dataCPU_dims.push_back(batch_size);
+      dataCPU_dims.push_back(num_channels);
+
       dataCPU_dims.push_back(data_dims[0]);
       dataCPU_dims.push_back(data_dims[1]);
       dataCPU_dims.push_back(data_dims[2]);
@@ -2985,6 +2996,7 @@ public:
 	SetValue(json, max_darts, 100)
 	SetValue(json, use_gt, false)
 	SetValue(json, use_elements, false)
+	SetValue(json, use_hydro, false)
 	SetValue(json, verbose, false)
 	SetValue(json, random, true)
 	init();
@@ -3289,6 +3301,14 @@ public:
 
 	}
 
+	//Make hydrophobicity grid
+	R3Grid* hydrogrid;
+	if(use_hydro) {
+	  pdb2grd::hydrophobicity = TRUE;
+	  hydrogrid = pdb2grd::CreateGrid(rot_pdb, NULL, NULL);
+	  pdb2grd::hydrophobicity = FALSE;
+	}
+
 	//Make the grid.
 	R3Grid* datagrid;
 	if(use_pocket_as_data && atom_file != "") { //Rasterize only those atoms listed in the atoms file(expected to be the atoms around the binding pocket)
@@ -3343,6 +3363,9 @@ public:
 	    Ogrid->WriteFile((output_data_basename + pdb_basename + std::string("-O") + std::string(".grd")).c_str());
 	    Pgrid->WriteFile((output_data_basename + pdb_basename + std::string("-P") + std::string(".grd")).c_str());
 	    Sgrid->WriteFile((output_data_basename + pdb_basename + std::string("-S") + std::string(".grd")).c_str());
+	  }
+	  if(use_hydro) {
+	    hydrogrid->WriteFile((output_data_basename + pdb_basename + std::string("-hydro") + std::string(".grd")).c_str());
 	  }
 	}
 	
@@ -3844,8 +3867,10 @@ public:
 	}
 	
 	
-	if(use_elements) {
-	 
+	//Load grid channel(s) onto dataCPU
+	int curr_channel = 0;
+
+	if(use_elements) {	 
 	  const RNScalar* Cgrid_values = Cgrid->GridValues();
 	  const RNScalar* Ngrid_values = Ngrid->GridValues();
 	  const RNScalar* Ogrid_values = Ogrid->GridValues();
@@ -3853,12 +3878,13 @@ public:
 	  const RNScalar* Sgrid_values = Sgrid->GridValues();
 	  int data_num_ele = Cgrid->NEntries();
 	  for( int i = 0; i < data_num_ele; i++) {
-	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 0 + i] = (float)(Cgrid_values[i]);
-	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 1 + i] = (float)(Ngrid_values[i]);
-	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 2 + i] = (float)(Ogrid_values[i]);
-	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 3 + i] = (float)(Pgrid_values[i]);
-	    dataCPU->CPUmem[count * data_num_ele * 5 + data_num_ele * 4 + i] = (float)(Sgrid_values[i]);
-	  }	  
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 0) + i] = (float)(Cgrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 1) + i] = (float)(Ngrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 2) + i] = (float)(Ogrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 3) + i] = (float)(Pgrid_values[i]);
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 4) + i] = (float)(Sgrid_values[i]);
+	  }
+	  curr_channel = 5;
 	}
 	else {
 	  //Put PDB grid into dataCPU, label into labelCPU
@@ -3866,8 +3892,18 @@ public:
 	  const RNScalar* datagrid_values = datagrid->GridValues();
 	  int data_num_ele = datagrid->NEntries();
 	  for( int i = 0; i < data_num_ele; i++) {
-	    dataCPU->CPUmem[count * data_num_ele + i] = (float)(datagrid_values[i]); //Add values to the <counter>'th volume's indices
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 0) + i] = (float)(datagrid_values[i]); //Add values to the <counter>'th volume's indices
 	  }
+	  curr_channel = 1;
+	}
+
+	if(use_hydro) {
+	  const RNScalar* hydrogrid_values = hydrogrid->GridValues();
+	  int data_num_ele = hydrogrid->NEntries();
+	  for( int i = 0; i < data_num_ele; i++) {
+	    dataCPU->CPUmem[count * data_num_ele * num_channels + data_num_ele * (curr_channel + 0) + i] = (float)(hydrogrid_values[i]); //Add values to the <counter>'th volume's indices
+	  }
+	  curr_channel++;
 	}
 	
 	
@@ -3887,6 +3923,9 @@ public:
 	  delete Ogrid;
 	  delete Sgrid;
 	  delete Pgrid;
+	}
+	if(use_hydro) {
+	  delete hydrogrid;
 	}
 	
       }
